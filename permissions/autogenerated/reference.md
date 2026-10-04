@@ -1,6 +1,10 @@
 ## Default Permission
 
-Default permissions for the plugin
+Lets the plugin's pages send requests with a body over IPC
+
+#### This default permission set includes the following:
+
+- `allow-fetch`
 
 ## Permission Table
 
@@ -10,4 +14,30 @@ Default permissions for the plugin
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`leptos-ssr:allow-fetch`
+
+</td>
+<td>
+
+Enables the fetch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`leptos-ssr:deny-fetch`
+
+</td>
+<td>
+
+Denies the fetch command without any pre-configured scope.
+
+</td>
+</tr>
 </table>

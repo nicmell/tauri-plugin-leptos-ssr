@@ -295,10 +295,22 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "Default permissions for the plugin",
+          "description": "Enables the fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch",
+          "markdownDescription": "Enables the fetch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch",
+          "markdownDescription": "Denies the fetch command without any pre-configured scope."
+        },
+        {
+          "description": "Lets the plugin's pages send requests with a body over IPC\n#### This default permission set includes:\n\n- `allow-fetch`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin"
+          "markdownDescription": "Lets the plugin's pages send requests with a body over IPC\n#### This default permission set includes:\n\n- `allow-fetch`"
         }
       ]
     }

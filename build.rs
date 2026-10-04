@@ -1,3 +1,3 @@
 fn main() {
-    tauri_plugin::Builder::new(&[]).build();
+    tauri_plugin::Builder::new(&["fetch"]).build();
 }

@@ -10,6 +10,7 @@ use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 
 mod assets;
+mod commands;
 mod dispatch;
 mod error;
 mod protocol;
@@ -63,6 +64,8 @@ where
 {
     Builder::new("leptos-ssr")
         .register_asynchronous_uri_scheme_protocol(SCHEME, protocol::handle)
+        .invoke_handler(tauri::generate_handler![commands::fetch])
+        .js_init_script(fetch_script())
         .setup(move |app, _api| {
             let dispatcher = if tauri::is_dev() {
                 let upstream = app
@@ -80,6 +83,12 @@ where
             Ok(())
         })
         .build()
+}
+
+/// `fetch.js` for this platform's origin.
+fn fetch_script() -> String {
+    let origin = serde_json::to_string(ORIGIN).expect("a string serializes");
+    include_str!("fetch.js").replace("__LEPTOS_SSR_ORIGIN__", &origin)
 }
 
 fn release_router<R, F>(app: &AppHandle<R>, router: F) -> Result<axum::Router>

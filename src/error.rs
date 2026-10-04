@@ -18,6 +18,10 @@ pub enum Error {
          the site with `cargo leptos build --release` in `build.beforeBuildCommand`"
     )]
     MissingAsset(String),
+    #[error("`fetch` only serves the plugin's own origin, got `{0}`")]
+    ForeignUrl(String),
+    #[error("invalid `fetch` request: {0}")]
+    InvalidRequest(String),
     #[error(transparent)]
     Url(#[from] url::ParseError),
 }
