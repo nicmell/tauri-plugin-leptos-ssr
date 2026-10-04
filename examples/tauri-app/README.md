@@ -3,7 +3,7 @@
 A Leptos SSR app in the [start-axum-workspace](https://github.com/leptos-rs/start-axum-workspace) layout, served inside a Tauri app by `tauri-plugin-leptos-ssr`. It runs on macOS and Android.
 
 ```
-app/        the Leptos app: pages, the `whoami` server function, `router()` (feature ssr)
+app/        the Leptos app: pages, server functions, `/events`, `router()` (feature ssr)
 frontend/   the wasm entry that hydrates the app (feature hydrate)
 server/     the axum server that `cargo leptos watch` runs in dev, also a standalone web server
 src-tauri/  the Tauri app: the plugin, the `greet` command, the main window
@@ -12,6 +12,8 @@ public/     static files copied to the site root
 ```
 
 The home page shows a self-check line after hydration. It calls the `whoami` server function and the `greet` Tauri command once. In dev the server function runs in the watch server (`server (macos)`). In a release build it runs inside the app (`tauri-app (macos)`, or `app_process64 (android)` on Android).
+
+Two more lines show streaming. The `countdown` server function streams `3 2 1 liftoff` in four chunks, and the server-sent events counter follows `/events`, which ticks every second. Both arrive over IPC, chunk by chunk, on macOS and Android.
 
 ## Prerequisites
 

@@ -15,6 +15,10 @@ The scheme answers GET and HEAD. Custom-protocol requests reach the app without 
 
 Requests with a body take the IPC path. The plugin injects a script that wraps `window.fetch` on the plugin origin. A same-origin request whose method is not GET or HEAD goes through the plugin's `fetch` command, which hands it to the same dispatcher. Leptos server functions call `fetch`, so they work without changes.
 
+Responses on the IPC path stream. The `fetch` command answers with the head and the bytes already available. The script then reads the rest into a `ReadableStream`, one `fetch_read_body` call per chunk, so streaming server functions arrive chunk by chunk. The scheme cannot stream, because Tauri's scheme responder takes a complete body. For that reason, a same-origin GET that accepts `text/event-stream` also takes the IPC path, and the script replaces `EventSource` on the plugin origin with one built on that fetch.
+
+When a page loads or its window closes, the plugin drops every open response body of that webview. In dev, that closes the connection to the watch server. In release builds, it stops the app's stream.
+
 ## Setup
 
 These steps follow the demo in [`examples/tauri-app`](examples/tauri-app), which uses the [start-axum-workspace](https://github.com/leptos-rs/start-axum-workspace) layout.
@@ -88,8 +92,10 @@ In dev builds, server functions run in the `cargo leptos watch` process. That pr
 
 These hold on every platform:
 
-- Responses are buffered. SSR streaming arrives in one piece, and streaming server functions do not stream.
-- No websockets and no server-sent events.
+- Pages and static files are buffered. SSR streaming arrives in one piece.
+- A GET `fetch` is buffered unless it accepts `text/event-stream`.
+- Request bodies are buffered. On Android, Tauri sends them as JSON number arrays of about 4 times their size, so keep uploads to a few MB.
+- No websockets.
 - No cookies. Neither scheme responses nor IPC responses reach the webview cookie store.
 - A native `<form method="post">` submitted before hydration gets the 405.
 - `XMLHttpRequest` requests with a body are not rerouted. Leptos only uses `fetch`.
