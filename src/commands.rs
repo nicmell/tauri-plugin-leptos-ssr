@@ -1,8 +1,10 @@
+use axum::body::Body;
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::http::{Method, Request, Response};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, command, ipc};
 
+use crate::dispatch;
 use crate::{Error, LeptosSsr, Result};
 
 /// A request with a body, sent by `fetch.js` from one of the plugin's pages.
@@ -27,7 +29,9 @@ pub(crate) async fn fetch<R: Runtime>(
     request: FetchRequest,
 ) -> Result<ipc::Response> {
     let request = request.into_http()?;
-    let response = app.state::<LeptosSsr>().dispatcher.dispatch(request).await;
+    let dispatcher = &app.state::<LeptosSsr>().dispatcher;
+    let response = dispatcher.dispatch(request.map(Body::from)).await;
+    let response = dispatch::collect(response, dispatcher.body_error_status()).await;
     Ok(ipc::Response::new(frame(&response)?))
 }
 
@@ -166,7 +170,8 @@ mod tests {
         let request = fetch_request("leptos://localhost/echo")
             .into_http()
             .expect("own url");
-        let response = dispatcher.dispatch(request).await;
+        let response = dispatcher.dispatch(request.map(Body::from)).await;
+        let response = dispatch::collect(response, StatusCode::BAD_GATEWAY).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body(), b"a=1");
     }
