@@ -4,8 +4,22 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("`build.devUrl` is not set: point it at the `cargo leptos watch` server")]
+    DevUrlUnset,
+    #[error("`build.devUrl` must be an http:// URL, got `{0}`")]
+    DevUrlNotHttp(String),
+    #[error(
+        "LEPTOS_OUTPUT_NAME was not set when the app was compiled: set it under `[env]` \
+         in `.cargo/config.toml` to the cargo-leptos project `name`"
+    )]
+    OutputNameUnset,
+    #[error(
+        "`build.frontendDist` has no `{0}`: point it at the cargo-leptos `site-root` and build \
+         the site with `cargo leptos build --release` in `build.beforeBuildCommand`"
+    )]
+    MissingAsset(String),
     #[error(transparent)]
-    Io(#[from] std::io::Error),
+    Url(#[from] url::ParseError),
 }
 
 impl Serialize for Error {
