@@ -1,10 +1,10 @@
 ## Default Permission
 
-Default permissions for the plugin
+Lets the plugin's pages send requests with a body over IPC
 
 #### This default permission set includes the following:
 
-- `allow-ping`
+- `allow-fetch`
 
 ## Permission Table
 
@@ -18,12 +18,12 @@ Default permissions for the plugin
 <tr>
 <td>
 
-`leptos-ssr:allow-ping`
+`leptos-ssr:allow-fetch`
 
 </td>
 <td>
 
-Enables the ping command without any pre-configured scope.
+Enables the fetch command without any pre-configured scope.
 
 </td>
 </tr>
@@ -31,12 +31,12 @@ Enables the ping command without any pre-configured scope.
 <tr>
 <td>
 
-`leptos-ssr:deny-ping`
+`leptos-ssr:deny-fetch`
 
 </td>
 <td>
 
-Denies the ping command without any pre-configured scope.
+Denies the fetch command without any pre-configured scope.
 
 </td>
 </tr>

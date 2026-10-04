@@ -1,0 +1,25 @@
+[package]
+name = "frontend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+app.workspace = true
+leptos.workspace = true
+console_error_panic_hook = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+
+# Enabled by cargo-leptos (`lib-features`) only: a workspace-wide native build
+# must not compile `app` with `ssr` and `hydrate` together.
+[features]
+hydrate = [
+  "app/hydrate",
+  "leptos/hydrate",
+  "dep:console_error_panic_hook",
+  "dep:wasm-bindgen",
+]

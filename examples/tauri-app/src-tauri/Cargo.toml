@@ -1,23 +1,25 @@
 [package]
 name = "tauri-app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
-edition = "2024"
-rust-version = "1.90"
+version.workspace = true
+description = "Tauri + Leptos SSR demo"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lib]
 name = "tauri_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [build-dependencies]
-tauri-build = { version = "2.7.1", default-features = false }
+tauri-build.workspace = true
 
 [dependencies]
-tauri = { version = "2.12.1" }
-tauri-plugin-leptos-ssr = { path = "../../../" }
+app = { workspace = true, features = ["ssr"] }
+tauri.workspace = true
+tauri-plugin-leptos-ssr.workspace = true
+tauri-plugin-log.workspace = true
+log.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+toml.workspace = true
