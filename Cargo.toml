@@ -5,7 +5,7 @@ authors = [ "You" ]
 description = ""
 edition = "2024"
 rust-version = "1.90"
-exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+exclude = ["/examples"]
 links = "tauri-plugin-leptos-ssr"
 
 [dependencies]

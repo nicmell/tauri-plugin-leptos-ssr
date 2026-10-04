@@ -2,12 +2,7 @@
   "productName": "tauri-app",
   "version": "0.1.0",
   "identifier": "com.tauri.dev",
-  "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
-    "devUrl": "http://localhost:1420",
-    "frontendDist": "../dist"
-  },
+  "build": {},
   "app": {
     "withGlobalTauri": false,
     "security": {
