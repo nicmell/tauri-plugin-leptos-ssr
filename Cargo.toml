@@ -1,10 +1,11 @@
 [package]
 name = "tauri-plugin-leptos-ssr"
 version = "0.1.0"
-authors = [ "You" ]
 description = "Serve a cargo-leptos SSR app inside a Tauri app through a custom URI scheme"
 edition = "2024"
 rust-version = "1.90"
+license = "MIT-0"
+repository = "https://github.com/nicmell/tauri-plugin-leptos-ssr"
 exclude = ["/examples"]
 links = "tauri-plugin-leptos-ssr"
 
