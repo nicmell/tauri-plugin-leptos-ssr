@@ -34,6 +34,8 @@ impl Dispatcher {
         remove_all(&mut parts.headers, &HOP_BY_HOP);
         // WebKit does not decode encoded bodies coming from a custom scheme.
         parts.headers.remove(header::ACCEPT_ENCODING);
+        let method = parts.method.clone();
+        let uri = parts.uri.clone();
         let request = Request::from_parts(parts, body);
 
         let mut response = match self {
@@ -43,6 +45,7 @@ impl Dispatcher {
         remove_all(response.headers_mut(), &HOP_BY_HOP);
         // wry on macOS copies response headers over the length it computed itself.
         response.headers_mut().remove(header::CONTENT_LENGTH);
+        log::debug!("{method} {uri} {}", response.status());
         response
     }
 }
