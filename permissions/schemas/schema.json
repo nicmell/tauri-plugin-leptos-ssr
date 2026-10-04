@@ -307,10 +307,34 @@
           "markdownDescription": "Denies the fetch command without any pre-configured scope."
         },
         {
-          "description": "Lets the plugin's pages send requests with a body over IPC\n#### This default permission set includes:\n\n- `allow-fetch`",
+          "description": "Enables the fetch_cancel_body command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-cancel-body",
+          "markdownDescription": "Enables the fetch_cancel_body command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_cancel_body command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-cancel-body",
+          "markdownDescription": "Denies the fetch_cancel_body command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_read_body command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-read-body",
+          "markdownDescription": "Enables the fetch_read_body command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_read_body command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-read-body",
+          "markdownDescription": "Denies the fetch_read_body command without any pre-configured scope."
+        },
+        {
+          "description": "Lets the plugin's pages send requests with a body over IPC and read streamed responses\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-read-body`\n- `allow-fetch-cancel-body`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Lets the plugin's pages send requests with a body over IPC\n#### This default permission set includes:\n\n- `allow-fetch`"
+          "markdownDescription": "Lets the plugin's pages send requests with a body over IPC and read streamed responses\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-read-body`\n- `allow-fetch-cancel-body`"
         }
       ]
     }

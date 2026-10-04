@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use leptos_config::{Env, LeptosOptions};
 use tauri::plugin::{Builder, TauriPlugin};
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
+use tauri::webview::PageLoadEvent;
+use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WindowEvent};
 
 mod assets;
 mod commands;
@@ -15,10 +16,14 @@ mod dispatch;
 mod error;
 mod protocol;
 mod proxy;
+mod streams;
+#[cfg(test)]
+mod testing;
 
 pub use error::{Error, Result};
 
 use dispatch::Dispatcher;
+use streams::Streams;
 
 const SCHEME: &str = "leptos";
 
@@ -32,6 +37,7 @@ const ORIGIN: &str = if cfg!(any(windows, target_os = "android")) {
 /// The plugin state, reachable through [`LeptosSsrExt`].
 pub struct LeptosSsr {
     dispatcher: Dispatcher,
+    streams: Streams,
 }
 
 impl LeptosSsr {
@@ -64,8 +70,30 @@ where
 {
     Builder::new("leptos-ssr")
         .register_asynchronous_uri_scheme_protocol(SCHEME, protocol::handle)
-        .invoke_handler(tauri::generate_handler![commands::fetch])
+        .invoke_handler(tauri::generate_handler![
+            commands::fetch,
+            commands::fetch_read_body,
+            commands::fetch_cancel_body
+        ])
         .js_init_script(fetch_script())
+        .on_page_load(|webview, payload| {
+            if payload.event() == PageLoadEvent::Started
+                && let Some(state) = webview.try_state::<LeptosSsr>()
+            {
+                state.streams.close_webview(webview.label());
+            }
+        })
+        .on_event(|app, event| {
+            if let RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Destroyed,
+                ..
+            } = event
+                && let Some(state) = app.try_state::<LeptosSsr>()
+            {
+                state.streams.close_webview(label);
+            }
+        })
         .setup(move |app, _api| {
             let dispatcher = if tauri::is_dev() {
                 let upstream = app
@@ -79,7 +107,10 @@ where
             } else {
                 Dispatcher::Router(release_router(app, router)?)
             };
-            app.manage(LeptosSsr { dispatcher });
+            app.manage(LeptosSsr {
+                dispatcher,
+                streams: Streams::default(),
+            });
             Ok(())
         })
         .build()
