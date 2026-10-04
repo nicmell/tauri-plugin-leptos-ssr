@@ -7,6 +7,7 @@ use leptos_router::path;
 #[cfg(feature = "ssr")]
 pub use server::router;
 
+mod streaming;
 mod tauri_ipc;
 
 #[component]
@@ -43,9 +44,13 @@ fn HomePage() -> impl IntoView {
     let server_reply = RwSignal::new(String::new());
     let command_reply = RwSignal::new(String::new());
     let self_check = RwSignal::new(String::from("Not hydrated yet."));
+    let countdown = RwSignal::new(String::new());
+    let latest_event = RwSignal::new(String::new());
 
     // Effects run in the browser only: once, right after hydration.
     Effect::new(move || {
+        spawn_local(streaming::run_countdown(countdown));
+        spawn_local(streaming::follow_events(latest_event));
         spawn_local(async move {
             let server = whoami()
                 .await
@@ -83,6 +88,8 @@ fn HomePage() -> impl IntoView {
             <img src="/leptos.svg" class="logo" alt="Leptos logo" />
         </div>
         <p id="self-check">{move || self_check.get()}</p>
+        <p id="countdown">"Streaming server function: " {move || countdown.get()}</p>
+        <p id="events">"Server-sent events: " {move || latest_event.get()}</p>
 
         <section>
             <button on:click=move |_| *count.write() += 1>"Clicked " {count} " times"</button>
@@ -135,6 +142,7 @@ mod server {
     pub fn router(options: LeptosOptions) -> Router {
         let routes = generate_route_list(App);
         Router::new()
+            .route("/events", axum::routing::get(crate::streaming::events))
             .leptos_routes(&options, routes, {
                 let options = options.clone();
                 move || shell(options.clone())
