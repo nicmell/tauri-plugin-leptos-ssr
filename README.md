@@ -15,7 +15,7 @@ The scheme answers GET and HEAD. Custom-protocol requests reach the app without 
 
 Requests with a body take the IPC path. The plugin injects a script that wraps `window.fetch` on the plugin origin. A same-origin request whose method is not GET or HEAD goes through the plugin's `fetch` command, which hands it to the same dispatcher. Leptos server functions call `fetch`, so they work without changes.
 
-Responses on the IPC path stream. The `fetch` command answers with the head and the bytes already available. The script then reads the rest into a `ReadableStream`, one `fetch_read_body` call per chunk, so streaming server functions arrive chunk by chunk. The scheme cannot stream, because Tauri's scheme responder takes a complete body. For that reason, a same-origin GET that accepts `text/event-stream` also takes the IPC path, and the script replaces `EventSource` on the plugin origin with one built on that fetch.
+Responses on the IPC path stream. The `fetch` command answers with the head and the bytes already available. The script then reads the rest into a `ReadableStream`, one `fetch_read_body` call per chunk, so streaming server functions arrive chunk by chunk. The scheme cannot stream, because Tauri's scheme responder takes a complete body. For that reason, a same-origin GET that accepts `text/event-stream` also takes the IPC path. The script also replaces `EventSource` on the plugin origin with one built on that fetch.
 
 When a page loads or its window closes, the plugin drops every open response body of that webview. In dev, that closes the connection to the watch server. In release builds, it stops the app's stream.
 
@@ -113,3 +113,7 @@ node --test 'tests/*.test.mjs'   # src/fetch.js against a stubbed page, Node 22 
 ```
 
 The demo has its own commands in [`examples/tauri-app/README.md`](examples/tauri-app/README.md).
+
+## License
+
+MIT-0, see [LICENSE](LICENSE).
