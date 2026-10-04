@@ -9,9 +9,9 @@ exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
 links = "tauri-plugin-leptos-ssr"
 
 [dependencies]
-tauri = { version = "2.12.1" }
+tauri = { version = "2.12" }
 serde = "1.0"
 thiserror = "2"
 
 [build-dependencies]
-tauri-plugin = { version = "2.7.1", features = ["build"] }
+tauri-plugin = { version = "2.7", features = ["build"] }

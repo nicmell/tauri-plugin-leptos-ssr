@@ -15,9 +15,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-tauri-build = { version = "2.7.1", default-features = false }
+tauri-build = { version = "2.7", default-features = false }
 
 [dependencies]
-tauri = { version = "2.12.1" }
+tauri = { version = "2.12" }
 tauri-plugin-leptos-ssr = { path = "../../../" }
 
