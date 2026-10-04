@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use axum::body::Body;
 use axum::http::header::{self, HeaderValue};
 use axum::http::uri::{Authority, Scheme};
@@ -10,9 +8,6 @@ use hyper_util::rt::TokioExecutor;
 
 use crate::dispatch;
 use crate::{Error, Result};
-
-// Android abandons a custom-protocol request after 30 s.
-const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Forwards requests to the `cargo leptos watch` server.
 pub(crate) struct Proxy {
@@ -34,7 +29,7 @@ impl Proxy {
         })
     }
 
-    pub(crate) async fn forward(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    pub(crate) async fn forward(&self, request: Request<Body>) -> Response<Body> {
         let (mut parts, body) = request.into_parts();
         let method = parts.method.clone();
         let mut uri = parts.uri.into_parts();
@@ -42,7 +37,9 @@ impl Proxy {
         uri.authority = Some(self.authority.clone());
         parts.uri = match Uri::from_parts(uri) {
             Ok(uri) => uri,
-            Err(error) => return dispatch::text(StatusCode::BAD_REQUEST, error.to_string()),
+            Err(error) => {
+                return dispatch::text(StatusCode::BAD_REQUEST, error.to_string()).map(Body::from);
+            }
         };
         if let Ok(host) = HeaderValue::from_str(self.authority.as_str()) {
             parts.headers.insert(header::HOST, host);
@@ -51,17 +48,17 @@ impl Proxy {
         parts.headers.remove(header::IF_NONE_MATCH);
         parts.headers.remove(header::IF_MODIFIED_SINCE);
 
-        let request = Request::from_parts(parts, Body::from(body));
-        match tokio::time::timeout(TIMEOUT, self.client.request(request)).await {
-            Ok(Ok(response)) => dispatch::collect(response, StatusCode::BAD_GATEWAY).await,
-            Ok(Err(error)) => self.unavailable(&method, &error.to_string()),
-            Err(_) => self.unavailable(&method, "the request timed out"),
+        match self.client.request(Request::from_parts(parts, body)).await {
+            Ok(response) => response.map(Body::new),
+            Err(error) => self
+                .unavailable(&method, &error.to_string())
+                .map(Body::from),
         }
     }
 
     // A page retried every second, so the window recovers on its own once the
     // watch server is up again.
-    fn unavailable(&self, method: &Method, reason: &str) -> Response<Vec<u8>> {
+    pub(crate) fn unavailable(&self, method: &Method, reason: &str) -> Response<Vec<u8>> {
         let message = format!("waiting for the dev server at {}: {reason}", self.authority);
         if method == Method::GET {
             dispatch::html(
@@ -103,19 +100,20 @@ mod tests {
         format!("http://{addr}").parse().expect("valid url")
     }
 
-    fn get_request(uri: &str) -> Request<Vec<u8>> {
-        Request::builder()
+    async fn get_page(proxy: &Proxy, uri: &str) -> Response<Vec<u8>> {
+        let request = Request::builder()
             .uri(uri)
             .header(header::IF_NONE_MATCH, "\"etag\"")
-            .body(Vec::new())
-            .expect("valid request")
+            .body(Body::empty())
+            .expect("valid request");
+        dispatch::collect(proxy.forward(request).await, StatusCode::BAD_GATEWAY).await
     }
 
     #[tokio::test]
     async fn get_reaches_the_upstream() {
         let upstream = upstream().await;
         let proxy = Proxy::new(&upstream).expect("http upstream");
-        let response = proxy.forward(get_request("/page")).await;
+        let response = get_page(&proxy, "/page").await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = String::from_utf8(response.body().clone()).expect("utf-8 body");
         let host = upstream.host_str().expect("host");
@@ -129,10 +127,8 @@ mod tests {
         let addr = listener.local_addr().expect("bound address");
         drop(listener);
         let upstream: url::Url = format!("http://{addr}").parse().expect("valid url");
-        let response = Proxy::new(&upstream)
-            .expect("http upstream")
-            .forward(get_request("/page"))
-            .await;
+        let proxy = Proxy::new(&upstream).expect("http upstream");
+        let response = get_page(&proxy, "/page").await;
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = String::from_utf8(response.body().clone()).expect("utf-8 body");
         assert!(body.contains(r#"http-equiv="refresh" content="1""#));

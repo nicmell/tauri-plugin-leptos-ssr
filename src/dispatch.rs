@@ -28,31 +28,37 @@ const HOP_BY_HOP: [HeaderName; 8] = [
 ];
 
 impl Dispatcher {
-    pub(crate) async fn dispatch(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    pub(crate) async fn dispatch(&self, request: Request<Body>) -> Response<Body> {
         let (mut parts, body) = request.into_parts();
         parts.uri = origin_form(&parts.uri);
         remove_all(&mut parts.headers, &HOP_BY_HOP);
-        // WebKit does not decode encoded bodies coming from a custom scheme.
+        // Neither WebKit (custom scheme) nor a JS-built `Response` (IPC)
+        // decodes an encoded body.
         parts.headers.remove(header::ACCEPT_ENCODING);
         let method = parts.method.clone();
         let uri = parts.uri.clone();
         let request = Request::from_parts(parts, body);
 
         let mut response = match self {
-            Self::Router(router) => route(router.clone(), request).await,
+            Self::Router(router) => {
+                let Ok(response) = router.clone().oneshot(request).await;
+                response
+            }
             Self::Proxy(proxy) => proxy.forward(request).await,
         };
         remove_all(response.headers_mut(), &HOP_BY_HOP);
-        // wry on macOS copies response headers over the length it computed itself.
-        response.headers_mut().remove(header::CONTENT_LENGTH);
         log::debug!("{method} {uri} {}", response.status());
         response
     }
-}
 
-async fn route(router: axum::Router, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
-    let Ok(response) = router.oneshot(request.map(Body::from)).await;
-    collect(response, StatusCode::INTERNAL_SERVER_ERROR).await
+    /// The status of a body that fails after its head was sent: the app's
+    /// (500) or the dev server's (502).
+    pub(crate) fn body_error_status(&self) -> StatusCode {
+        match self {
+            Self::Router(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Proxy(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
 }
 
 /// The path and query of `uri`: the scheme hands over absolute URIs.
@@ -131,13 +137,15 @@ mod tests {
             .route("/echo", post(|body: String| async move { body }))
     }
 
-    fn request(method: &str, uri: &str, body: &str) -> Request<Vec<u8>> {
-        Request::builder()
+    async fn call(method: &str, uri: &str, body: &str) -> Response<Vec<u8>> {
+        let request = Request::builder()
             .method(method)
             .uri(uri)
             .header(header::ACCEPT_ENCODING, "gzip")
-            .body(body.as_bytes().to_vec())
-            .expect("valid request")
+            .body(Body::from(body.to_owned()))
+            .expect("valid request");
+        let response = Dispatcher::Router(router()).dispatch(request).await;
+        collect(response, StatusCode::INTERNAL_SERVER_ERROR).await
     }
 
     #[test]
@@ -155,30 +163,20 @@ mod tests {
 
     #[tokio::test]
     async fn absolute_uris_reach_the_router() {
-        let dispatcher = Dispatcher::Router(router());
-        let response = dispatcher
-            .dispatch(request("GET", "leptos://localhost/page", ""))
-            .await;
+        let response = call("GET", "leptos://localhost/page", "").await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body(), b"page");
-        assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
     }
 
     #[tokio::test]
     async fn accept_encoding_never_reaches_the_app() {
-        let dispatcher = Dispatcher::Router(router());
-        let response = dispatcher
-            .dispatch(request("GET", "leptos://localhost/headers", ""))
-            .await;
+        let response = call("GET", "leptos://localhost/headers", "").await;
         assert_eq!(response.body(), b"None");
     }
 
     #[tokio::test]
     async fn bodies_reach_the_router() {
-        let dispatcher = Dispatcher::Router(router());
-        let response = dispatcher
-            .dispatch(request("POST", "leptos://localhost/echo", "a=1"))
-            .await;
+        let response = call("POST", "leptos://localhost/echo", "a=1").await;
         assert_eq!(response.body(), b"a=1");
     }
 

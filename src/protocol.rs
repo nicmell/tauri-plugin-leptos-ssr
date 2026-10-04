@@ -1,9 +1,16 @@
+use std::time::Duration;
+
+use axum::body::Body;
 use axum::http::header::{self, HeaderValue};
 use axum::http::{Method, Request, Response, StatusCode};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use crate::LeptosSsr;
 use crate::dispatch::{self, Dispatcher};
+
+// Android abandons a custom-protocol request whose response is not complete
+// after 30 s.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The `leptos` scheme handler.
 pub(crate) fn handle<R: Runtime>(
@@ -14,7 +21,7 @@ pub(crate) fn handle<R: Runtime>(
     let app = ctx.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         let response = match app.try_state::<LeptosSsr>() {
-            Some(state) => respond(&state.dispatcher, request).await,
+            Some(state) => respond(&state.dispatcher, request, TIMEOUT).await,
             None => with_cors(dispatch::text(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "the leptos-ssr plugin is not set up",
@@ -24,17 +31,40 @@ pub(crate) fn handle<R: Runtime>(
     });
 }
 
-/// Answers one scheme request: GET and HEAD only, redirects as pages.
+/// Answers one scheme request: GET and HEAD only, buffered within `timeout`,
+/// redirects as pages.
 pub(crate) async fn respond(
     dispatcher: &Dispatcher,
     request: Request<Vec<u8>>,
+    timeout: Duration,
 ) -> Response<Vec<u8>> {
-    let response = if matches!(*request.method(), Method::GET | Method::HEAD) {
-        redirect_as_page(dispatcher.dispatch(request).await)
+    let method = request.method().clone();
+    let response = if matches!(method, Method::GET | Method::HEAD) {
+        let buffered = async {
+            let response = dispatcher.dispatch(request.map(Body::from)).await;
+            dispatch::collect(response, dispatcher.body_error_status()).await
+        };
+        match tokio::time::timeout(timeout, buffered).await {
+            Ok(response) => redirect_as_page(response),
+            Err(_) => timed_out(dispatcher, &method),
+        }
     } else {
         method_not_allowed()
     };
-    with_cors(response)
+    let mut response = with_cors(response);
+    // wry on macOS copies response headers over the length it computed itself.
+    response.headers_mut().remove(header::CONTENT_LENGTH);
+    response
+}
+
+fn timed_out(dispatcher: &Dispatcher, method: &Method) -> Response<Vec<u8>> {
+    match dispatcher {
+        Dispatcher::Proxy(proxy) => proxy.unavailable(method, "no complete answer in time"),
+        Dispatcher::Router(_) => dispatch::text(
+            StatusCode::GATEWAY_TIMEOUT,
+            "the app did not answer in time",
+        ),
+    }
 }
 
 // Android custom-protocol requests carry no body, so the scheme refuses
@@ -88,11 +118,24 @@ mod tests {
 
     use super::*;
 
+    const SHORT: Duration = Duration::from_millis(200);
+
     fn dispatcher() -> Dispatcher {
         Dispatcher::Router(
             axum::Router::new()
                 .route("/", get(|| async { "home" }))
-                .route("/old", get(|| async { Redirect::to("/new?a=1&b=2") })),
+                .route("/old", get(|| async { Redirect::to("/new?a=1&b=2") }))
+                .route(
+                    "/sized",
+                    get(|| async { ([(header::CONTENT_LENGTH, "5")], "sized") }),
+                )
+                .route(
+                    "/slow",
+                    get(|| async {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        "late"
+                    }),
+                ),
         )
     }
 
@@ -113,7 +156,12 @@ mod tests {
 
     #[tokio::test]
     async fn get_is_dispatched() {
-        let response = respond(&dispatcher(), request(Method::GET, "leptos://localhost/")).await;
+        let response = respond(
+            &dispatcher(),
+            request(Method::GET, "leptos://localhost/"),
+            SHORT,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body(), b"home");
         assert_eq!(allow_origin(&response), Some(crate::ORIGIN));
@@ -121,14 +169,36 @@ mod tests {
 
     #[tokio::test]
     async fn head_is_dispatched_without_a_body() {
-        let response = respond(&dispatcher(), request(Method::HEAD, "leptos://localhost/")).await;
+        let response = respond(
+            &dispatcher(),
+            request(Method::HEAD, "leptos://localhost/"),
+            SHORT,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.body().is_empty());
     }
 
     #[tokio::test]
+    async fn content_length_is_dropped() {
+        let response = respond(
+            &dispatcher(),
+            request(Method::GET, "leptos://localhost/sized"),
+            SHORT,
+        )
+        .await;
+        assert_eq!(response.body(), b"sized");
+        assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
+    }
+
+    #[tokio::test]
     async fn methods_with_a_body_are_refused() {
-        let response = respond(&dispatcher(), request(Method::POST, "leptos://localhost/")).await;
+        let response = respond(
+            &dispatcher(),
+            request(Method::POST, "leptos://localhost/"),
+            SHORT,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(
             response
@@ -145,11 +215,50 @@ mod tests {
         let response = respond(
             &dispatcher(),
             request(Method::GET, "leptos://localhost/old"),
+            SHORT,
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = String::from_utf8(response.body().clone()).expect("utf-8 page");
         assert!(body.contains(r#"content="0;url=/new?a=1&amp;b=2""#));
+        assert_eq!(allow_origin(&response), Some(crate::ORIGIN));
+    }
+
+    #[tokio::test]
+    async fn a_silent_dev_server_answers_a_retrying_page() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("bound address");
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let upstream: url::Url = format!("http://{addr}").parse().expect("valid url");
+        let dispatcher =
+            Dispatcher::Proxy(crate::proxy::Proxy::new(&upstream).expect("http upstream"));
+        let response = respond(
+            &dispatcher,
+            request(Method::GET, "leptos://localhost/"),
+            SHORT,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = String::from_utf8(response.body().clone()).expect("utf-8 page");
+        assert!(body.contains(r#"http-equiv="refresh" content="1""#));
+    }
+
+    #[tokio::test]
+    async fn slow_answers_time_out() {
+        let response = respond(
+            &dispatcher(),
+            request(Method::GET, "leptos://localhost/slow"),
+            SHORT,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(allow_origin(&response), Some(crate::ORIGIN));
     }
 }

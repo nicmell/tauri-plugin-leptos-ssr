@@ -1,122 +1,199 @@
-use axum::http::header::{HeaderName, HeaderValue};
-use axum::http::{Method, Request, Response};
+use axum::body::Body;
+use axum::http::header::{HeaderMap, HeaderName, HeaderValue};
+use axum::http::response::Parts;
+use axum::http::{Method, Request};
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime, command, ipc};
+use tauri::ipc::{self, InvokeBody};
+use tauri::{Manager, Runtime, Webview, command};
 
+use crate::streams::{self, Chunk};
 use crate::{Error, LeptosSsr, Result};
 
-/// A request with a body, sent by `fetch.js` from one of the plugin's pages.
+/// The IPC header carrying the method, URL and headers of a `fetch` request:
+/// Tauri sets `Content-Type` on the IPC request itself.
+const REQUEST_HEADER: &str = "leptos-ssr-request";
+
 #[derive(Deserialize)]
-pub(crate) struct FetchRequest {
+struct RequestHead {
     method: String,
     url: String,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
 }
 
 #[derive(Serialize)]
-struct Head<'a> {
+struct ResponseHead<'a> {
     status: u16,
     headers: Vec<(&'a str, &'a str)>,
+    id: Option<u64>,
 }
 
-/// Dispatches `request` like the scheme does and answers with [`frame`].
+/// Dispatches a request from `fetch.js` like the scheme does and answers with
+/// [`frame`]; the rest of a streamed body comes from [`fetch_read_body`].
 #[command]
 pub(crate) async fn fetch<R: Runtime>(
-    app: AppHandle<R>,
-    request: FetchRequest,
+    webview: Webview<R>,
+    request: ipc::Request<'_>,
 ) -> Result<ipc::Response> {
-    let request = request.into_http()?;
-    let response = app.state::<LeptosSsr>().dispatcher.dispatch(request).await;
-    Ok(ipc::Response::new(frame(&response)?))
+    let request = http_request(request.headers(), request.body())?;
+    let state = webview.state::<LeptosSsr>();
+    let label = webview.label();
+    let generation = state.streams.generation(label);
+    let response = state.dispatcher.dispatch(request).await;
+    let (parts, initial, id) = state.streams.start(label, generation, response).await?;
+    Ok(ipc::Response::new(frame(&parts, id, &initial)?))
 }
 
-impl FetchRequest {
-    fn into_http(self) -> Result<Request<Vec<u8>>> {
-        let url = url::Url::parse(&self.url)?;
-        let own = match url.scheme() {
-            "leptos" => url.host_str() == Some("localhost"),
-            "http" | "https" => url.host_str() == Some("leptos.localhost"),
-            _ => false,
-        };
-        if !own || url.port().is_some() {
-            return Err(Error::ForeignUrl(self.url));
-        }
-        let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
-        let mut builder = Request::builder()
-            .method(Method::from_bytes(self.method.as_bytes()).map_err(invalid)?)
-            .uri(path);
-        for (name, value) in &self.headers {
-            builder = builder.header(
-                HeaderName::from_bytes(name.as_bytes()).map_err(invalid)?,
-                HeaderValue::from_str(value).map_err(invalid)?,
-            );
-        }
-        builder.body(self.body).map_err(invalid)
+/// The next chunk of a streamed body, as [`Chunk::into_bytes`] encodes it.
+#[command]
+pub(crate) async fn fetch_read_body<R: Runtime>(
+    webview: Webview<R>,
+    id: u64,
+) -> Result<ipc::Response> {
+    let state = webview.state::<LeptosSsr>();
+    let chunk = state
+        .streams
+        .read(webview.label(), id, streams::IDLE)
+        .await?;
+    Ok(ipc::Response::new(Chunk::into_bytes(chunk)))
+}
+
+/// Drops a streamed body the page no longer reads.
+#[command]
+pub(crate) fn fetch_cancel_body<R: Runtime>(webview: Webview<R>, id: u64) {
+    if let Some(state) = webview.try_state::<LeptosSsr>() {
+        state.streams.cancel(webview.label(), id);
     }
+}
+
+/// The request `fetch.js` sent: its head from [`REQUEST_HEADER`], its body
+/// raw (custom-protocol IPC) or as a number array (postMessage IPC).
+fn http_request(headers: &HeaderMap, body: &InvokeBody) -> Result<Request<Body>> {
+    let head = headers
+        .get(REQUEST_HEADER)
+        .ok_or_else(|| invalid(format!("missing `{REQUEST_HEADER}` header")))?;
+    let head = percent_decode_str(head.to_str().map_err(invalid)?)
+        .decode_utf8()
+        .map_err(invalid)?;
+    let head: RequestHead = serde_json::from_str(&head).map_err(invalid)?;
+    let body = match body {
+        InvokeBody::Raw(bytes) => bytes.clone(),
+        InvokeBody::Json(value) => Vec::<u8>::deserialize(value).map_err(invalid)?,
+    };
+
+    let url = url::Url::parse(&head.url)?;
+    let own = match url.scheme() {
+        "leptos" => url.host_str() == Some("localhost"),
+        "http" | "https" => url.host_str() == Some("leptos.localhost"),
+        _ => false,
+    };
+    if !own || url.port().is_some() {
+        return Err(Error::ForeignUrl(head.url));
+    }
+    let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    let mut builder = Request::builder()
+        .method(Method::from_bytes(head.method.as_bytes()).map_err(invalid)?)
+        .uri(path);
+    for (name, value) in &head.headers {
+        builder = builder.header(
+            HeaderName::from_bytes(name.as_bytes()).map_err(invalid)?,
+            HeaderValue::from_str(value).map_err(invalid)?,
+        );
+    }
+    builder.body(Body::from(body)).map_err(invalid)
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {
     Error::InvalidRequest(error.to_string())
 }
 
-/// `response` as `fetch.js` decodes it: the length of the JSON head as a
-/// big-endian u32, the head (`status`, `headers`), then the body.
-fn frame(response: &Response<Vec<u8>>) -> Result<Vec<u8>> {
-    let head = Head {
-        status: response.status().as_u16(),
-        headers: response
-            .headers()
+/// A response head as `fetch.js` decodes it: the length of the JSON head as a
+/// big-endian u32, the head (`status`, `headers`, and the stream `id` when
+/// the body continues), then the bytes already available.
+fn frame(parts: &Parts, id: Option<u64>, initial: &[u8]) -> Result<Vec<u8>> {
+    let head = ResponseHead {
+        status: parts.status.as_u16(),
+        headers: parts
+            .headers
             .iter()
             .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?)))
             .collect(),
+        id,
     };
     let head = serde_json::to_vec(&head).map_err(invalid)?;
     let length = u32::try_from(head.len()).map_err(invalid)?;
-    let body = response.body();
-    let mut frame = Vec::with_capacity(4 + head.len() + body.len());
+    let mut frame = Vec::with_capacity(4 + head.len() + initial.len());
     frame.extend_from_slice(&length.to_be_bytes());
     frame.extend_from_slice(&head);
-    frame.extend_from_slice(body);
+    frame.extend_from_slice(initial);
     Ok(frame)
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{StatusCode, header};
-    use axum::routing::post;
+    use std::time::Duration;
+
+    use axum::body::Bytes;
+    use axum::http::{Response, StatusCode, header};
+    use axum::routing::{get, post};
+    use tokio::sync::mpsc;
 
     use super::*;
     use crate::dispatch::Dispatcher;
     use crate::proxy::Proxy;
+    use crate::streams::Streams;
+    use crate::testing;
 
-    fn fetch_request(url: &str) -> FetchRequest {
-        FetchRequest {
-            method: "POST".to_owned(),
-            url: url.to_owned(),
-            headers: vec![(
-                "content-type".to_owned(),
-                "application/x-www-form-urlencoded".to_owned(),
-            )],
-            body: b"a=1".to_vec(),
-        }
+    fn ipc_headers(url: &str) -> HeaderMap {
+        let head = serde_json::json!({
+            "method": "POST",
+            "url": url,
+            "headers": [["content-type", "application/x-www-form-urlencoded"]],
+        });
+        let encoded = percent_encoding::utf8_percent_encode(
+            &head.to_string(),
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            REQUEST_HEADER,
+            HeaderValue::from_str(&encoded).expect("ascii"),
+        );
+        headers
     }
 
-    #[test]
-    fn own_urls_become_origin_form_requests() {
-        for url in [
-            "leptos://localhost/api/greet?x=1",
-            "http://leptos.localhost/api/greet?x=1",
+    async fn body_text(request: Request<Body>) -> String {
+        let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8(bytes.to_vec()).expect("utf-8")
+    }
+
+    #[tokio::test]
+    async fn requests_come_raw_or_as_number_arrays() {
+        let headers = ipc_headers("leptos://localhost/api/greet?x=1");
+        for body in [
+            InvokeBody::Raw(b"a=1".to_vec()),
+            InvokeBody::Json(serde_json::json!([97, 61, 49])),
         ] {
-            let request = fetch_request(url).into_http().expect("own url");
+            let request = http_request(&headers, &body).expect("valid request");
             assert_eq!(request.method(), Method::POST);
             assert_eq!(request.uri(), "/api/greet?x=1");
             assert_eq!(
                 request.headers()[header::CONTENT_TYPE],
                 "application/x-www-form-urlencoded"
             );
-            assert_eq!(request.body(), b"a=1");
+            assert_eq!(body_text(request).await, "a=1");
         }
+    }
+
+    #[test]
+    fn requests_need_their_head() {
+        assert!(matches!(
+            http_request(&HeaderMap::new(), &InvokeBody::Raw(Vec::new())),
+            Err(Error::InvalidRequest(_))
+        ));
     }
 
     #[test]
@@ -128,28 +205,101 @@ mod tests {
             "http://leptos.localhost:8080/api",
         ] {
             assert!(
-                matches!(fetch_request(url).into_http(), Err(Error::ForeignUrl(_))),
+                matches!(
+                    http_request(&ipc_headers(url), &InvokeBody::Raw(Vec::new())),
+                    Err(Error::ForeignUrl(_))
+                ),
                 "{url}"
             );
         }
+        assert!(
+            http_request(
+                &ipc_headers("http://leptos.localhost/api"),
+                &InvokeBody::Raw(Vec::new())
+            )
+            .is_ok()
+        );
     }
 
     #[test]
-    fn frames_carry_head_and_body() {
-        let mut response = Response::new(b"body".to_vec());
+    fn frames_carry_head_and_initial_bytes() {
+        let mut response = Response::new(());
         *response.status_mut() = StatusCode::CREATED;
         response
             .headers_mut()
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        let (parts, ()) = response.into_parts();
 
-        let frame = frame(&response).expect("frame");
+        let frame = frame(&parts, Some(7), b"body").expect("frame");
         let length = u32::from_be_bytes(frame[..4].try_into().expect("4 bytes")) as usize;
         let head: serde_json::Value =
             serde_json::from_slice(&frame[4..4 + length]).expect("json head");
         assert_eq!(head["status"], 201);
         assert_eq!(head["headers"][0][0], "content-type");
         assert_eq!(head["headers"][0][1], "text/plain");
+        assert_eq!(head["id"], 7);
         assert_eq!(&frame[4 + length..], b"body");
+    }
+
+    /// A route answering its one request with `body`.
+    fn streaming_route(body: Body) -> axum::Router {
+        let body = std::sync::Arc::new(std::sync::Mutex::new(Some(body)));
+        axum::Router::new().route(
+            "/stream",
+            get(move || {
+                let body = body.lock().expect("lock").take().expect("one request");
+                async move { body }
+            }),
+        )
+    }
+
+    async fn stream_through(dispatcher: &Dispatcher, tx: &mpsc::UnboundedSender<Bytes>) {
+        let streams = Streams::default();
+        let request = Request::get("leptos://localhost/stream")
+            .body(Body::empty())
+            .expect("valid request");
+        let response = dispatcher.dispatch(request).await;
+        let (_, initial, id) = streams.start("main", 0, response).await.expect("started");
+        assert!(initial.is_empty());
+        let id = id.expect("streaming");
+
+        tx.send(Bytes::from_static(b"tick 1"))
+            .expect("receiver alive");
+        let mut received = Vec::new();
+        while received.is_empty() {
+            match streams
+                .read("main", id, Duration::from_millis(500))
+                .await
+                .expect("read")
+            {
+                Chunk::Data(data) => received = data,
+                Chunk::Idle => {}
+                Chunk::Last(data) => panic!("ended early with {data:?}"),
+            }
+        }
+        assert_eq!(received, b"tick 1");
+        streams.cancel("main", id);
+    }
+
+    #[tokio::test]
+    async fn the_router_streams_before_the_body_ends() {
+        let (tx, body, _) = testing::channel();
+        let dispatcher = Dispatcher::Router(streaming_route(body));
+        stream_through(&dispatcher, &tx).await;
+    }
+
+    #[tokio::test]
+    async fn the_dev_proxy_streams_before_the_body_ends() {
+        let (tx, body, _) = testing::channel();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("bound address");
+        let app = streaming_route(body);
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let upstream: url::Url = format!("http://{addr}").parse().expect("valid url");
+        let dispatcher = Dispatcher::Proxy(Proxy::new(&upstream).expect("http upstream"));
+        stream_through(&dispatcher, &tx).await;
     }
 
     #[tokio::test]
@@ -163,11 +313,18 @@ mod tests {
 
         let upstream: url::Url = format!("http://{addr}").parse().expect("valid url");
         let dispatcher = Dispatcher::Proxy(Proxy::new(&upstream).expect("http upstream"));
-        let request = fetch_request("leptos://localhost/echo")
-            .into_http()
-            .expect("own url");
+        let request = http_request(
+            &ipc_headers("leptos://localhost/echo"),
+            &InvokeBody::Raw(b"a=1".to_vec()),
+        )
+        .expect("valid request");
         let response = dispatcher.dispatch(request).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.body(), b"a=1");
+        let (parts, initial, id) = Streams::default()
+            .start("main", 0, response)
+            .await
+            .expect("started");
+        assert_eq!(parts.status, StatusCode::OK);
+        assert_eq!(initial, b"a=1");
+        assert_eq!(id, None);
     }
 }

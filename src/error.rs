@@ -22,6 +22,14 @@ pub enum Error {
     ForeignUrl(String),
     #[error("invalid `fetch` request: {0}")]
     InvalidRequest(String),
+    #[error("no open response body {0}")]
+    UnknownStream(u64),
+    #[error("the response body was cancelled")]
+    StreamCancelled,
+    #[error("the page that asked for the response is gone")]
+    StreamClosed,
+    #[error("the response body failed: {0}")]
+    Stream(String),
     #[error(transparent)]
     Url(#[from] url::ParseError),
 }
