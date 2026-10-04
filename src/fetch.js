@@ -194,11 +194,241 @@
     return new Response(bodyStream(id, initial, signal), { status, headers })
   }
 
-  window.fetch = function (input, init) {
+  function acceptsEventStream(input, init) {
+    const headers =
+      init && init.headers !== undefined
+        ? init.headers
+        : input instanceof Request
+          ? input.headers
+          : undefined
+    const accept = new Headers(headers).get('accept') || ''
+    return accept.toLowerCase().includes('text/event-stream')
+  }
+
+  // Requests with a body need IPC; event streams need it to arrive before
+  // they end, since the scheme buffers.
+  function needsIpc(input, init) {
     const method = methodOf(input, init)
-    if (method === 'GET' || method === 'HEAD' || !isOwn(urlOf(input))) {
+    if (method === 'HEAD') {
+      return false
+    }
+    return method !== 'GET' || acceptsEventStream(input, init)
+  }
+
+  window.fetch = function (input, init) {
+    if (!isOwn(urlOf(input)) || !needsIpc(input, init)) {
       return nativeFetch.call(window, input, init)
     }
     return viaIpc(input, init)
   }
+
+  // Server-sent events from the plugin's origin, read through the `fetch`
+  // above (WHATWG EventSource processing model).
+  const NativeEventSource = window.EventSource
+  const CONNECTING = 0
+  const OPEN = 1
+  const CLOSED = 2
+  const eventOrigin = `${origin.protocol}//${origin.host}`
+
+  class EventSource extends EventTarget {
+    static CONNECTING = CONNECTING
+    static OPEN = OPEN
+    static CLOSED = CLOSED
+
+    static [Symbol.hasInstance](value) {
+      return (
+        EventSource.prototype.isPrototypeOf(value) ||
+        (NativeEventSource !== undefined && value instanceof NativeEventSource)
+      )
+    }
+
+    #controller = null
+    #timer = null
+    #lastEventId = ''
+    #retry = 3000
+
+    constructor(url, init) {
+      const resolved = new URL(String(url), location.href)
+      if (!isOwn(resolved) && NativeEventSource !== undefined) {
+        return new NativeEventSource(url, init)
+      }
+      super()
+      this.url = resolved.href
+      this.withCredentials = Boolean(init && init.withCredentials)
+      this.readyState = CONNECTING
+      this.onopen = null
+      this.onmessage = null
+      this.onerror = null
+      this.#connect()
+    }
+
+    close() {
+      this.readyState = CLOSED
+      if (this.#timer !== null) {
+        clearTimeout(this.#timer)
+        this.#timer = null
+      }
+      if (this.#controller) {
+        this.#controller.abort()
+      }
+    }
+
+    async #connect() {
+      const controller = new AbortController()
+      this.#controller = controller
+      const headers = { Accept: 'text/event-stream', 'Cache-Control': 'no-cache' }
+      if (this.#lastEventId) {
+        headers['Last-Event-ID'] = this.#lastEventId
+      }
+      let response
+      try {
+        response = await window.fetch(this.url, { headers, signal: controller.signal })
+      } catch {
+        this.#reconnect(controller)
+        return
+      }
+      if (controller.signal.aborted) {
+        return
+      }
+      const type = (response.headers.get('content-type') || '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase()
+      if (response.status !== 200 || type !== 'text/event-stream') {
+        if (response.body) {
+          response.body.cancel().catch(() => {})
+        }
+        this.readyState = CLOSED
+        this.#dispatch(new Event('error'))
+        return
+      }
+      this.readyState = OPEN
+      this.#dispatch(new Event('open'))
+      try {
+        await this.#read(response.body, controller)
+      } catch {
+        // A failed stream reconnects like an ended one.
+      }
+      this.#reconnect(controller)
+    }
+
+    #reconnect(controller) {
+      if (this.readyState === CLOSED || controller.signal.aborted) {
+        return
+      }
+      this.readyState = CONNECTING
+      this.#dispatch(new Event('error'))
+      if (this.readyState === CLOSED) {
+        return
+      }
+      this.#timer = setTimeout(() => {
+        this.#timer = null
+        this.#connect()
+      }, this.#retry)
+    }
+
+    async #read(body, controller) {
+      const reader = body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let started = false
+      let data = ''
+      let type = ''
+      let lastEventId = this.#lastEventId
+
+      const line = (text) => {
+        if (text === '') {
+          this.#lastEventId = lastEventId
+          if (data !== '' && !controller.signal.aborted) {
+            const event = new MessageEvent(type || 'message', {
+              data: data.endsWith('\n') ? data.slice(0, -1) : data,
+              origin: eventOrigin,
+              lastEventId
+            })
+            this.#dispatch(event)
+          }
+          data = ''
+          type = ''
+          return
+        }
+        if (text[0] === ':') {
+          return
+        }
+        const colon = text.indexOf(':')
+        const field = colon === -1 ? text : text.slice(0, colon)
+        let value = colon === -1 ? '' : text.slice(colon + 1)
+        if (value[0] === ' ') {
+          value = value.slice(1)
+        }
+        if (field === 'event') {
+          type = value
+        } else if (field === 'data') {
+          data += `${value}\n`
+        } else if (field === 'id') {
+          if (!value.includes('\0')) {
+            lastEventId = value
+          }
+        } else if (field === 'retry' && /^\d+$/.test(value)) {
+          this.#retry = Number(value)
+        }
+      }
+
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done || controller.signal.aborted) {
+          return
+        }
+        let text = decoder.decode(value, { stream: true })
+        if (!started && text.length > 0) {
+          started = true
+          if (text.charCodeAt(0) === 0xfeff) {
+            text = text.slice(1)
+          }
+        }
+        buffer += text
+        let start = 0
+        for (let i = 0; i < buffer.length; i++) {
+          const c = buffer[i]
+          if (c !== '\n' && c !== '\r') {
+            continue
+          }
+          // A CR at the end may be the first half of a CRLF still in flight.
+          if (c === '\r' && i + 1 === buffer.length) {
+            break
+          }
+          line(buffer.slice(start, i))
+          if (c === '\r' && buffer[i + 1] === '\n') {
+            i++
+          }
+          start = i + 1
+        }
+        buffer = buffer.slice(start)
+      }
+    }
+
+    #dispatch(event) {
+      this.dispatchEvent(event)
+      const handler = this[`on${event.type}`]
+      if (typeof handler === 'function') {
+        try {
+          handler.call(this, event)
+        } catch (error) {
+          // Reported like a throwing listener, without stopping the stream.
+          queueMicrotask(() => {
+            throw error
+          })
+        }
+      }
+    }
+  }
+
+  for (const [name, value] of [
+    ['CONNECTING', CONNECTING],
+    ['OPEN', OPEN],
+    ['CLOSED', CLOSED]
+  ]) {
+    Object.defineProperty(EventSource.prototype, name, { value })
+  }
+
+  window.EventSource = EventSource
 })()
