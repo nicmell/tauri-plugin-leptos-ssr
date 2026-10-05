@@ -46,6 +46,12 @@ impl LeptosSsr {
         let base: url::Url = format!("{SCHEME}://localhost/").parse()?;
         Ok(WebviewUrl::CustomProtocol(base.join(path)?))
     }
+
+    /// The origin of the plugin's pages: `leptos://localhost`, or
+    /// `http://leptos.localhost` on Android and Windows.
+    pub fn origin(&self) -> &'static str {
+        ORIGIN
+    }
 }
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to
