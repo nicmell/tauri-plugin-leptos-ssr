@@ -4435,7 +4435,9 @@ name = "tauri-plugin-leptos-ssr"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "http-body-util",
+ "hyper",
  "hyper-util",
  "leptos_config",
  "log",
@@ -4446,6 +4448,7 @@ dependencies = [
  "tauri-plugin",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "url",
 ]

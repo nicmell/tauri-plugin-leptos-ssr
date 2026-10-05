@@ -7,6 +7,7 @@ use leptos_router::path;
 #[cfg(feature = "ssr")]
 pub use server::router;
 
+mod socket;
 mod streaming;
 mod tauri_ipc;
 
@@ -29,7 +30,13 @@ pub fn App() -> impl IntoView {
 /// `cargo leptos watch` server in dev, the app itself in release builds.
 #[server]
 pub async fn whoami() -> Result<String, ServerFnError> {
-    let exe = std::env::current_exe().map_err(|error| ServerFnError::new(error.to_string()))?;
+    served_by().map_err(|error| ServerFnError::new(error.to_string()))
+}
+
+/// The executable that serves the app, and its OS.
+#[cfg(feature = "ssr")]
+fn served_by() -> std::io::Result<String> {
+    let exe = std::env::current_exe()?;
     let name = exe
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -46,11 +53,19 @@ fn HomePage() -> impl IntoView {
     let self_check = RwSignal::new(String::from("Not hydrated yet."));
     let countdown = RwSignal::new(String::new());
     let latest_event = RwSignal::new(String::new());
+    let websocket = RwSignal::new(String::new());
+    let socket_reply = RwSignal::new(String::new());
 
     // Effects run in the browser only: once, right after hydration.
     Effect::new(move || {
         spawn_local(streaming::run_countdown(countdown));
         spawn_local(streaming::follow_events(latest_event));
+        spawn_local(async move {
+            let reply = socket::talk("ping".to_owned())
+                .await
+                .unwrap_or_else(|error| format!("error: {error}"));
+            websocket.set(reply);
+        });
         spawn_local(async move {
             let server = whoami()
                 .await
@@ -72,6 +87,14 @@ fn HomePage() -> impl IntoView {
             server_reply.set(format!("The server function ran in {reply}."));
         });
     };
+    let echo = move |_| {
+        spawn_local(async move {
+            let reply = socket::talk(name.get_untracked())
+                .await
+                .unwrap_or_else(|error| format!("error: {error}"));
+            socket_reply.set(reply);
+        });
+    };
     let greet = move |_| {
         spawn_local(async move {
             let reply = tauri_ipc::greet(&name.get_untracked())
@@ -90,6 +113,7 @@ fn HomePage() -> impl IntoView {
         <p id="self-check">{move || self_check.get()}</p>
         <p id="countdown">"Streaming server function: " {move || countdown.get()}</p>
         <p id="events">"Server-sent events: " {move || latest_event.get()}</p>
+        <p id="websocket">"Websocket: " {move || websocket.get()}</p>
 
         <section>
             <button on:click=move |_| *count.write() += 1>"Clicked " {count} " times"</button>
@@ -102,6 +126,8 @@ fn HomePage() -> impl IntoView {
             <input bind:value=name />
             <button on:click=greet>"Call the Tauri command"</button>
             <p>{move || command_reply.get()}</p>
+            <button on:click=echo>"Echo over the websocket"</button>
+            <p>{move || socket_reply.get()}</p>
         </section>
     }
 }
@@ -143,6 +169,7 @@ mod server {
         let routes = generate_route_list(App);
         Router::new()
             .route("/events", axum::routing::get(crate::streaming::events))
+            .route("/ws", axum::routing::any(crate::socket::echo))
             .leptos_routes(&options, routes, {
                 let options = options.clone();
                 move || shell(options.clone())
