@@ -16,6 +16,7 @@ mod dispatch;
 mod error;
 mod protocol;
 mod proxy;
+mod registry;
 mod streams;
 #[cfg(test)]
 mod testing;

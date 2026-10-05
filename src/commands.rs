@@ -3,6 +3,7 @@ use axum::http::header::{HeaderMap, HeaderName, HeaderValue};
 use axum::http::response::Parts;
 use axum::http::{Method, Request};
 use percent_encoding::percent_decode_str;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{self, InvokeBody};
 use tauri::{Manager, Runtime, Webview, command};
@@ -67,30 +68,10 @@ pub(crate) fn fetch_cancel_body<R: Runtime>(webview: Webview<R>, id: u64) {
 }
 
 /// The request `fetch.js` sent: its head from [`REQUEST_HEADER`], its body
-/// raw (custom-protocol IPC) or as a number array (postMessage IPC).
+/// from [`raw_body`].
 fn http_request(headers: &HeaderMap, body: &InvokeBody) -> Result<Request<Body>> {
-    let head = headers
-        .get(REQUEST_HEADER)
-        .ok_or_else(|| invalid(format!("missing `{REQUEST_HEADER}` header")))?;
-    let head = percent_decode_str(head.to_str().map_err(invalid)?)
-        .decode_utf8()
-        .map_err(invalid)?;
-    let head: RequestHead = serde_json::from_str(&head).map_err(invalid)?;
-    let body = match body {
-        InvokeBody::Raw(bytes) => bytes.clone(),
-        InvokeBody::Json(value) => Vec::<u8>::deserialize(value).map_err(invalid)?,
-    };
-
-    let url = url::Url::parse(&head.url)?;
-    let own = match url.scheme() {
-        "leptos" => url.host_str() == Some("localhost"),
-        "http" | "https" => url.host_str() == Some("leptos.localhost"),
-        _ => false,
-    };
-    if !own || url.port().is_some() {
-        return Err(Error::ForeignUrl(head.url));
-    }
-    let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    let head: RequestHead = head(headers)?;
+    let path = own_path(&head.url)?;
     let mut builder = Request::builder()
         .method(Method::from_bytes(head.method.as_bytes()).map_err(invalid)?)
         .uri(path);
@@ -100,7 +81,43 @@ fn http_request(headers: &HeaderMap, body: &InvokeBody) -> Result<Request<Body>>
             HeaderValue::from_str(value).map_err(invalid)?,
         );
     }
-    builder.body(Body::from(body)).map_err(invalid)
+    builder.body(Body::from(raw_body(body)?)).map_err(invalid)
+}
+
+/// The JSON head in [`REQUEST_HEADER`], percent-encoded.
+fn head<T: DeserializeOwned>(headers: &HeaderMap) -> Result<T> {
+    let head = headers
+        .get(REQUEST_HEADER)
+        .ok_or_else(|| invalid(format!("missing `{REQUEST_HEADER}` header")))?;
+    let head = percent_decode_str(head.to_str().map_err(invalid)?)
+        .decode_utf8()
+        .map_err(invalid)?;
+    serde_json::from_str(&head).map_err(invalid)
+}
+
+/// A request body: raw (custom-protocol IPC) or a number array (postMessage
+/// IPC).
+fn raw_body(body: &InvokeBody) -> Result<Vec<u8>> {
+    match body {
+        InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        InvokeBody::Json(value) => Vec::<u8>::deserialize(value).map_err(invalid),
+    }
+}
+
+/// The path and query of `url` when it is on the plugin's origin:
+/// `leptos://localhost`, or `leptos.localhost` over http, https, ws or wss,
+/// without a port.
+fn own_path(url: &str) -> Result<String> {
+    let parsed = url::Url::parse(url)?;
+    let own = match parsed.scheme() {
+        "leptos" => parsed.host_str() == Some("localhost"),
+        "http" | "https" | "ws" | "wss" => parsed.host_str() == Some("leptos.localhost"),
+        _ => false,
+    };
+    if !own || parsed.port().is_some() {
+        return Err(Error::ForeignUrl(url.to_owned()));
+    }
+    Ok(parsed[url::Position::BeforePath..url::Position::AfterQuery].to_owned())
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {
@@ -219,6 +236,27 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn own_paths_cover_the_origin_in_every_scheme() {
+        for url in [
+            "leptos://localhost/ws?x=1",
+            "http://leptos.localhost/ws?x=1",
+            "https://leptos.localhost/ws?x=1",
+            "ws://leptos.localhost/ws?x=1",
+            "wss://leptos.localhost/ws?x=1",
+        ] {
+            assert_eq!(own_path(url).expect(url), "/ws?x=1");
+        }
+        for url in [
+            "ws://localhost/ws",
+            "ws://leptos.localhost:3001/live_reload",
+            "wss://example.com/ws",
+            "ipc://localhost/x",
+        ] {
+            assert!(matches!(own_path(url), Err(Error::ForeignUrl(_))), "{url}");
+        }
     }
 
     #[test]

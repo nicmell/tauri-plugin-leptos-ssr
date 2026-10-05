@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -12,6 +11,7 @@ use http_body_util::BodyExt;
 use http_body_util::combinators::Fuse;
 use tokio::sync::Notify;
 
+use crate::registry::Registry;
 use crate::{Error, Result};
 
 /// The data a read collects from frames that are already waiting; a frame is
@@ -65,20 +65,13 @@ impl Entry {
 /// The response bodies that pages read through `fetch_read_body`, per webview.
 #[derive(Default)]
 pub(crate) struct Streams {
-    last_id: AtomicU64,
-    state: Mutex<State>,
-}
-
-#[derive(Default)]
-struct State {
-    open: HashMap<(String, u64), Arc<Entry>>,
-    generations: HashMap<String, u64>,
+    registry: Registry<Entry>,
 }
 
 impl Streams {
     /// The page generation of `webview`, to hand to [`Streams::start`].
     pub(crate) fn generation(&self, webview: &str) -> u64 {
-        self.lock().generations.get(webview).copied().unwrap_or(0)
+        self.registry.generation(webview)
     }
 
     /// Splits `response` into its head, the bytes already available, and the
@@ -116,24 +109,16 @@ impl Streams {
             cancelled: AtomicBool::new(false),
             notify: Notify::new(),
         });
-        let mut state = self.lock();
-        if state.generations.get(webview).copied().unwrap_or(0) != generation {
-            drop(state);
-            return Err(Error::StreamClosed);
-        }
-        let id = self.last_id.fetch_add(1, Ordering::Relaxed) + 1;
-        state.open.insert((webview.to_owned(), id), entry);
-        Ok(id)
+        self.registry
+            .insert(webview, generation, entry)
+            .ok_or(Error::StreamClosed)
     }
 
     /// The next chunk of stream `id`, waiting at most `idle` for data.
     pub(crate) async fn read(&self, webview: &str, id: u64, idle: Duration) -> Result<Chunk> {
-        let key = (webview.to_owned(), id);
         let entry = self
-            .lock()
-            .open
-            .get(&key)
-            .cloned()
+            .registry
+            .get(webview, id)
             .ok_or(Error::UnknownStream(id))?;
         let cancelled = entry.notify.notified();
         tokio::pin!(cancelled);
@@ -163,16 +148,14 @@ impl Streams {
         };
         drop(body);
         if !matches!(chunk, Ok(Chunk::Data(_))) {
-            let removed = self.lock().open.remove(&key);
-            drop(removed);
+            drop(self.registry.remove(webview, id));
         }
         chunk
     }
 
     /// Drops stream `id`; a pending read returns at once.
     pub(crate) fn cancel(&self, webview: &str, id: u64) {
-        let removed = self.lock().open.remove(&(webview.to_owned(), id));
-        if let Some(entry) = removed {
+        if let Some(entry) = self.registry.remove(webview, id) {
             entry.cancel();
         }
     }
@@ -180,28 +163,9 @@ impl Streams {
     /// Drops every stream of `webview` and refuses the ones its current page
     /// still has in flight.
     pub(crate) fn close_webview(&self, webview: &str) {
-        let removed: Vec<Arc<Entry>> = {
-            let mut state = self.lock();
-            *state.generations.entry(webview.to_owned()).or_default() += 1;
-            let keys: Vec<_> = state
-                .open
-                .keys()
-                .filter(|(label, _)| label == webview)
-                .cloned()
-                .collect();
-            keys.into_iter()
-                .filter_map(|key| state.open.remove(&key))
-                .collect()
-        };
-        for entry in removed {
+        for entry in self.registry.close_webview(webview) {
             entry.cancel();
         }
-    }
-
-    fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

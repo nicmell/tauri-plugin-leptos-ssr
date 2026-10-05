@@ -18,9 +18,9 @@ pub enum Error {
          the site with `cargo leptos build --release` in `build.beforeBuildCommand`"
     )]
     MissingAsset(String),
-    #[error("`fetch` only serves the plugin's own origin, got `{0}`")]
+    #[error("the plugin only serves its own origin, got `{0}`")]
     ForeignUrl(String),
-    #[error("invalid `fetch` request: {0}")]
+    #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("no open response body {0}")]
     UnknownStream(u64),
