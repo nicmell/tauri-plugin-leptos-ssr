@@ -2,7 +2,7 @@
 
 A Tauri 2 plugin that serves a [cargo-leptos](https://github.com/leptos-rs/cargo-leptos) SSR app inside the Tauri app. The app opens no TCP port. Pages, server functions and static files take the same path on macOS and Android, in dev and in release builds.
 
-Tested on macOS (dev and release bundle) and on an Android 16 emulator (dev, debug and release APKs). Other platforms are untested.
+Tested on macOS (dev and release bundle) and on an Android 16 emulator (dev, debug and release APKs). Websockets are tested on macOS only. Other platforms are untested.
 
 ## How it works
 
@@ -18,6 +18,16 @@ Requests with a body take the IPC path. The plugin injects a script that wraps `
 Responses on the IPC path stream. The `fetch` command answers with the head and the bytes already available. The script then reads the rest into a `ReadableStream`, one `fetch_read_body` call per chunk, so streaming server functions arrive chunk by chunk. The scheme cannot stream, because Tauri's scheme responder takes a complete body. For that reason, a same-origin GET that accepts `text/event-stream` also takes the IPC path. The script also replaces `EventSource` on the plugin origin with one built on that fetch.
 
 When a page loads or its window closes, the plugin drops every open response body of that webview. In dev, that closes the connection to the watch server. In release builds, it stops the app's stream.
+
+Websockets to the plugin's origin also take the IPC path. The script replaces `WebSocket` there with a class that opens the socket through the `ws_open` command, so the app's websocket routes work without changes, Leptos websocket server functions included.
+
+- In release builds, the plugin connects to the router in process, over an in-memory connection. The app opens no port for it.
+- In dev builds, the plugin connects to the watch server.
+- The upgrade request carries the plugin's marker and no `Origin` header.
+- A task in the plugin reads each socket all the time, so pings and closes get their answers without the page.
+- The page pulls what arrived with `ws_read`, in batches. The plugin keeps at most 1 MiB that the page has not read. After that it stops reading, and the app's sends wait.
+- The page's sends go out in order through `ws_send`.
+- When a page loads or its window closes, the plugin closes that webview's sockets with code 1001.
 
 Every request the plugin dispatches carries a `leptos-ssr-origin` header with the page origin, in dev and in release. The plugin replaces any value that the page sent. With it, the app's server tells its webview from a browser, for example to serve the webview another script.
 
@@ -73,11 +83,11 @@ These steps follow the demo in [`examples/tauri-app`](examples/tauri-app), which
    LEPTOS_OUTPUT_NAME = "your-app"
    ```
 
-5. Add `leptos-ssr:default` to the capability of the window. It allows the `fetch` command.
+5. Add `leptos-ssr:default` to the capability of the window. It allows the `fetch` and `ws_*` commands.
 
 6. Add a `.taurignore` next to the cargo-leptos workspace manifest that lists your Leptos crates, for example `/app`.
 
-A server outside the plugin, for example a websocket server in the app, sees the pages' `Origin` header. `app.leptos_ssr().origin()` returns that origin for its checks.
+A server on its own port, outside the plugin, sees the pages' `Origin` header. `app.leptos_ssr().origin()` returns that origin for its checks.
 
 ## Build requirements
 
@@ -99,7 +109,10 @@ These hold on every platform:
 - Pages and static files are buffered. SSR streaming arrives in one piece.
 - A GET `fetch` is buffered unless it accepts `text/event-stream`.
 - Request bodies are buffered. On Android, Tauri sends them as JSON number arrays of about 4 times their size, so keep uploads to a few MB.
-- No websockets.
+- Websocket sends travel as JSON number arrays on Android, like request bodies.
+- Websockets carry no cookies, no `Origin` header and no extensions, `permessage-deflate` included.
+- Open websockets with URLs relative to the page. On macOS, `ws://localhost/…` is another host and stays native.
+- Workers, iframes and `WebSocketStream` get no websockets over IPC, because the script runs in the main frame only.
 - No cookies. Neither scheme responses nor IPC responses reach the webview cookie store.
 - A native `<form method="post">` submitted before hydration gets the 405.
 - `XMLHttpRequest` requests with a body are not rerouted. Leptos only uses `fetch`.
