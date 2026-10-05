@@ -75,6 +75,8 @@ These steps follow the demo in [`examples/tauri-app`](examples/tauri-app), which
 
 6. Add a `.taurignore` next to the cargo-leptos workspace manifest that lists your Leptos crates, for example `/app`.
 
+A server outside the plugin, for example a websocket server in the app, sees the pages' `Origin` header. `app.leptos_ssr().origin()` returns that origin for its checks.
+
 ## Build requirements
 
 The Tauri build compiles the SSR side with plain cargo, not with cargo-leptos. These requirements follow from that:
