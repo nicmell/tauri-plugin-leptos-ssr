@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-ws-read"
+description = "Enables the ws_read command without any pre-configured scope."
+commands.allow = ["ws_read"]
+
+[[permission]]
+identifier = "deny-ws-read"
+description = "Denies the ws_read command without any pre-configured scope."
+commands.deny = ["ws_read"]

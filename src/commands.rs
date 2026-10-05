@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::{self, InvokeBody};
 use tauri::{Manager, Runtime, Webview, command};
 
+use crate::sockets::{self, Opened};
 use crate::streams::{self, Chunk};
 use crate::{Error, LeptosSsr, Result};
 
-/// The IPC header carrying the method, URL and headers of a `fetch` request:
-/// Tauri sets `Content-Type` on the IPC request itself.
+/// The IPC header carrying the head of a request with a body (`fetch`'s
+/// method, URL and headers, or `ws_send`'s socket): Tauri sets
+/// `Content-Type` on the IPC request itself.
 const REQUEST_HEADER: &str = "leptos-ssr-request";
 
 #[derive(Deserialize)]
@@ -20,6 +22,11 @@ struct RequestHead {
     method: String,
     url: String,
     headers: Vec<(String, String)>,
+}
+
+#[derive(Deserialize)]
+struct SendHead {
+    id: u64,
 }
 
 #[derive(Serialize)]
@@ -65,6 +72,97 @@ pub(crate) fn fetch_cancel_body<R: Runtime>(webview: Webview<R>, id: u64) {
     if let Some(state) = webview.try_state::<LeptosSsr>() {
         state.streams.cancel(webview.label(), id);
     }
+}
+
+/// Opens a websocket to `url`, on the plugin's own origin only, within
+/// [`streams::IDLE`].
+#[command]
+pub(crate) async fn ws_open<R: Runtime>(
+    webview: Webview<R>,
+    url: String,
+    protocols: Vec<String>,
+) -> Result<Opened> {
+    let path = own_path(&url)?;
+    if let Some(bad) = protocols.iter().find(|protocol| !is_token(protocol)) {
+        return Err(invalid(format!("`{bad}` is not a subprotocol")));
+    }
+    let state = webview.state::<LeptosSsr>();
+    let label = webview.label();
+    let generation = state.sockets.generation(label);
+    let opening = state
+        .sockets
+        .open(&state.dispatcher, label, generation, &path, &protocols);
+    tokio::time::timeout(streams::IDLE, opening)
+        .await
+        .map_err(|_| Error::Socket(format!("{path} did not answer the upgrade")))?
+}
+
+/// The records of a websocket that arrived, as [`sockets::Record::encode`]
+/// writes them; none within [`streams::IDLE`] answers an empty batch.
+#[command]
+pub(crate) async fn ws_read<R: Runtime>(webview: Webview<R>, id: u64) -> Result<ipc::Response> {
+    let state = webview.state::<LeptosSsr>();
+    let batch = state
+        .sockets
+        .read(webview.label(), id, streams::IDLE)
+        .await?;
+    Ok(ipc::Response::new(batch))
+}
+
+/// Writes the records of the body to a websocket, whose id travels in
+/// [`REQUEST_HEADER`].
+#[command]
+pub(crate) async fn ws_send<R: Runtime>(
+    webview: Webview<R>,
+    request: ipc::Request<'_>,
+) -> Result<()> {
+    let head: SendHead = head(request.headers())?;
+    let messages = sockets::decode_sends(&raw_body(request.body())?)?;
+    let state = webview.state::<LeptosSsr>();
+    state
+        .sockets
+        .send(webview.label(), head.id, messages, streams::IDLE)
+        .await
+}
+
+/// Starts the close of a websocket: `code` is 1000 or 3000 to 4999, and
+/// `reason` at most 123 bytes.
+#[command]
+pub(crate) fn ws_close<R: Runtime>(
+    webview: Webview<R>,
+    id: u64,
+    code: Option<u16>,
+    reason: Option<String>,
+) -> Result<()> {
+    let frame = close_frame(code, reason)?;
+    match webview.try_state::<LeptosSsr>() {
+        Some(state) => state.sockets.close(webview.label(), id, frame),
+        None => Ok(()),
+    }
+}
+
+fn close_frame(code: Option<u16>, reason: Option<String>) -> Result<Option<sockets::CloseFrame>> {
+    let reason = reason.unwrap_or_default();
+    if reason.len() > 123 {
+        return Err(invalid("a close reason is at most 123 bytes"));
+    }
+    match code {
+        Some(code @ (1000 | 3000..=4999)) => Ok(Some(sockets::CloseFrame {
+            code: code.into(),
+            reason: reason.into(),
+        })),
+        Some(code) => Err(invalid(format!("{code} is not a close code a page sends"))),
+        None if reason.is_empty() => Ok(None),
+        None => Err(invalid("a close reason needs a code")),
+    }
+}
+
+/// An RFC 7230 token, as a subprotocol must be.
+fn is_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
 }
 
 /// The request `fetch.js` sent: its head from [`REQUEST_HEADER`], its body
@@ -256,6 +354,54 @@ mod tests {
             "ipc://localhost/x",
         ] {
             assert!(matches!(own_path(url), Err(Error::ForeignUrl(_))), "{url}");
+        }
+    }
+
+    #[test]
+    fn pages_close_with_their_own_codes_only() {
+        assert!(matches!(close_frame(None, None), Ok(None)));
+        for code in [1000, 3000, 4999] {
+            let frame = close_frame(Some(code), Some("bye".to_owned()))
+                .expect("a page code")
+                .expect("a frame");
+            assert_eq!(u16::from(frame.code), code);
+            assert_eq!(frame.reason.as_str(), "bye");
+        }
+        for (code, reason) in [
+            (Some(1001), None),
+            (Some(2999), None),
+            (Some(5000), None),
+            (Some(1000), Some("x".repeat(124))),
+            (None, Some("no code".to_owned())),
+        ] {
+            assert!(
+                matches!(close_frame(code, reason), Err(Error::InvalidRequest(_))),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subprotocols_are_tokens() {
+        assert!(is_token("chat.v2"));
+        assert!(!is_token(""));
+        assert!(!is_token("a b"));
+        assert!(!is_token("a,b"));
+    }
+
+    #[test]
+    fn socket_sends_come_raw_or_as_number_arrays() {
+        let record = [0, 0, 0, 0, 2, b'h', b'i'];
+        for body in [
+            InvokeBody::Raw(record.to_vec()),
+            InvokeBody::Json(serde_json::json!(record)),
+        ] {
+            let messages =
+                sockets::decode_sends(&raw_body(&body).expect("a body")).expect("records");
+            assert_eq!(
+                messages,
+                [tokio_tungstenite::tungstenite::Message::text("hi")]
+            );
         }
     }
 

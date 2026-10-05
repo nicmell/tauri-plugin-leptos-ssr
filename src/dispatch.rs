@@ -4,6 +4,9 @@ use axum::body::{Body, HttpBody};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tower::ServiceExt;
 
 use crate::proxy::Proxy;
@@ -58,6 +61,23 @@ impl Dispatcher {
         response
     }
 
+    /// A connection to the app for a websocket, and the host to name in its
+    /// upgrade request.
+    pub(crate) async fn connect(&self) -> std::io::Result<(Box<dyn Upgradable>, String)> {
+        match self {
+            Self::Router(router) => {
+                let host = crate::ORIGIN
+                    .split_once("://")
+                    .map_or(crate::ORIGIN, |(_, host)| host);
+                Ok((Box::new(serve_in_memory(router.clone())), host.to_owned()))
+            }
+            Self::Proxy(proxy) => Ok((
+                Box::new(proxy.connect().await?),
+                proxy.authority().to_owned(),
+            )),
+        }
+    }
+
     /// The status of a body that fails after its head was sent: the app's
     /// (500) or the dev server's (502).
     pub(crate) fn body_error_status(&self) -> StatusCode {
@@ -66,6 +86,28 @@ impl Dispatcher {
             Self::Proxy(_) => StatusCode::BAD_GATEWAY,
         }
     }
+}
+
+/// A stream that a websocket upgrade can run over.
+pub(crate) trait Upgradable: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Upgradable for T {}
+
+/// One end of an in-memory connection whose other end the router serves.
+/// axum's `WebSocketUpgrade` takes its upgrade from a hyper connection, which
+/// `oneshot` on the router cannot give it.
+fn serve_in_memory(router: axum::Router) -> tokio::io::DuplexStream {
+    let (client, server) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        let connection = hyper::server::conn::http1::Builder::new()
+            .timer(TokioTimer::new())
+            .serve_connection(TokioIo::new(server), TowerToHyperService::new(router))
+            .with_upgrades();
+        if let Err(error) = connection.await {
+            log::debug!("in-memory connection to the app: {error}");
+        }
+    });
+    client
 }
 
 /// The path and query of `uri`: the scheme hands over absolute URIs.

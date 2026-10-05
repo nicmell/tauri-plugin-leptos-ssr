@@ -29,6 +29,17 @@ impl Proxy {
         })
     }
 
+    pub(crate) fn authority(&self) -> &str {
+        self.authority.as_str()
+    }
+
+    /// A TCP connection to the watch server, for a websocket.
+    pub(crate) async fn connect(&self) -> std::io::Result<tokio::net::TcpStream> {
+        let tcp = tokio::net::TcpStream::connect(self.authority.as_str()).await?;
+        tcp.set_nodelay(true)?;
+        Ok(tcp)
+    }
+
     pub(crate) async fn forward(&self, request: Request<Body>) -> Response<Body> {
         let (mut parts, body) = request.into_parts();
         let method = parts.method.clone();

@@ -30,6 +30,12 @@ pub enum Error {
     StreamClosed,
     #[error("the response body failed: {0}")]
     Stream(String),
+    #[error("no open websocket {0}")]
+    UnknownSocket(u64),
+    #[error("the page that opened the websocket is gone")]
+    SocketClosed,
+    #[error("the websocket failed: {0}")]
+    Socket(String),
     #[error(transparent)]
     Url(#[from] url::ParseError),
 }

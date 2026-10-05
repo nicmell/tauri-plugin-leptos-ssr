@@ -17,6 +17,7 @@ mod error;
 mod protocol;
 mod proxy;
 mod registry;
+mod sockets;
 mod streams;
 #[cfg(test)]
 mod testing;
@@ -24,6 +25,7 @@ mod testing;
 pub use error::{Error, Result};
 
 use dispatch::Dispatcher;
+use sockets::Sockets;
 use streams::Streams;
 
 const SCHEME: &str = "leptos";
@@ -39,6 +41,7 @@ const ORIGIN: &str = if cfg!(any(windows, target_os = "android")) {
 pub struct LeptosSsr {
     dispatcher: Dispatcher,
     streams: Streams,
+    sockets: Sockets,
 }
 
 impl LeptosSsr {
@@ -52,6 +55,13 @@ impl LeptosSsr {
     /// `http://leptos.localhost` on Android and Windows.
     pub fn origin(&self) -> &'static str {
         ORIGIN
+    }
+
+    /// Drops what the page of `webview` held open: response bodies and
+    /// websockets.
+    fn close_webview(&self, webview: &str) {
+        self.streams.close_webview(webview);
+        self.sockets.close_webview(webview);
     }
 }
 
@@ -80,14 +90,18 @@ where
         .invoke_handler(tauri::generate_handler![
             commands::fetch,
             commands::fetch_read_body,
-            commands::fetch_cancel_body
+            commands::fetch_cancel_body,
+            commands::ws_open,
+            commands::ws_read,
+            commands::ws_send,
+            commands::ws_close
         ])
         .js_init_script(fetch_script())
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started
                 && let Some(state) = webview.try_state::<LeptosSsr>()
             {
-                state.streams.close_webview(webview.label());
+                state.close_webview(webview.label());
             }
         })
         .on_event(|app, event| {
@@ -98,7 +112,7 @@ where
             } = event
                 && let Some(state) = app.try_state::<LeptosSsr>()
             {
-                state.streams.close_webview(label);
+                state.close_webview(label);
             }
         })
         .setup(move |app, _api| {
@@ -117,6 +131,7 @@ where
             app.manage(LeptosSsr {
                 dispatcher,
                 streams: Streams::default(),
+                sockets: Sockets::default(),
             });
             Ok(())
         })
