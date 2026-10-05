@@ -19,6 +19,8 @@ Responses on the IPC path stream. The `fetch` command answers with the head and 
 
 When a page loads or its window closes, the plugin drops every open response body of that webview. In dev, that closes the connection to the watch server. In release builds, it stops the app's stream.
 
+Every request the plugin dispatches carries a `leptos-ssr-origin` header with the page origin, in dev and in release. The plugin replaces any value that the page sent. With it, the app's server tells its webview from a browser, for example to serve the webview another script.
+
 ## Setup
 
 These steps follow the demo in [`examples/tauri-app`](examples/tauri-app), which uses the [start-axum-workspace](https://github.com/leptos-rs/start-axum-workspace) layout.
