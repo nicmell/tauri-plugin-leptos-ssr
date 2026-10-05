@@ -16,6 +16,10 @@ pub(crate) enum Dispatcher {
     Proxy(Proxy),
 }
 
+/// The header on every request the plugin dispatches. Its value is the page
+/// origin.
+pub(crate) const MARKER: HeaderName = HeaderName::from_static("leptos-ssr-origin");
+
 const HOP_BY_HOP: [HeaderName; 8] = [
     header::CONNECTION,
     HeaderName::from_static("keep-alive"),
@@ -32,6 +36,9 @@ impl Dispatcher {
         let (mut parts, body) = request.into_parts();
         parts.uri = origin_form(&parts.uri);
         remove_all(&mut parts.headers, &HOP_BY_HOP);
+        parts
+            .headers
+            .insert(MARKER, HeaderValue::from_static(crate::ORIGIN));
         // Neither WebKit (custom scheme) nor a JS-built `Response` (IPC)
         // decodes an encoded body.
         parts.headers.remove(header::ACCEPT_ENCODING);
@@ -135,16 +142,27 @@ mod tests {
                 }),
             )
             .route("/echo", post(|body: String| async move { body }))
+            .route("/marker", get(marker))
     }
 
-    async fn call(method: &str, uri: &str, body: &str) -> Response<Vec<u8>> {
-        let request = Request::builder()
+    async fn marker(headers: HeaderMap) -> String {
+        format!("{:?}", headers.get(MARKER))
+    }
+
+    fn request(method: &str, uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
             .method(method)
             .uri(uri)
             .header(header::ACCEPT_ENCODING, "gzip")
+            .header(MARKER, "a page's own value")
             .body(Body::from(body.to_owned()))
-            .expect("valid request");
-        let response = Dispatcher::Router(router()).dispatch(request).await;
+            .expect("valid request")
+    }
+
+    async fn call(method: &str, uri: &str, body: &str) -> Response<Vec<u8>> {
+        let response = Dispatcher::Router(router())
+            .dispatch(request(method, uri, body))
+            .await;
         collect(response, StatusCode::INTERNAL_SERVER_ERROR).await
     }
 
@@ -172,6 +190,36 @@ mod tests {
     async fn accept_encoding_never_reaches_the_app() {
         let response = call("GET", "leptos://localhost/headers", "").await;
         assert_eq!(response.body(), b"None");
+    }
+
+    #[tokio::test]
+    async fn the_router_sees_the_marker() {
+        let response = call("GET", "leptos://localhost/marker", "").await;
+        assert_eq!(
+            response.body(),
+            format!("Some({:?})", crate::ORIGIN).as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_dev_server_sees_the_marker() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("bound address");
+        let app = axum::Router::new().route("/marker", get(marker));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let upstream: url::Url = format!("http://{addr}").parse().expect("valid url");
+        let proxy = Proxy::new(&upstream).expect("http upstream");
+
+        let response = Dispatcher::Proxy(proxy)
+            .dispatch(request("GET", "leptos://localhost/marker", ""))
+            .await;
+        let response = collect(response, StatusCode::BAD_GATEWAY).await;
+        assert_eq!(
+            response.body(),
+            format!("Some({:?})", crate::ORIGIN).as_bytes()
+        );
     }
 
     #[tokio::test]
