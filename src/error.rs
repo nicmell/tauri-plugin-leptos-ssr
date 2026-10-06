@@ -18,9 +18,9 @@ pub enum Error {
          the site with `cargo leptos build --release` in `build.beforeBuildCommand`"
     )]
     MissingAsset(String),
-    #[error("`fetch` only serves the plugin's own origin, got `{0}`")]
+    #[error("the plugin only serves its own origin, got `{0}`")]
     ForeignUrl(String),
-    #[error("invalid `fetch` request: {0}")]
+    #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("no open response body {0}")]
     UnknownStream(u64),
@@ -30,6 +30,12 @@ pub enum Error {
     StreamClosed,
     #[error("the response body failed: {0}")]
     Stream(String),
+    #[error("no open websocket {0}")]
+    UnknownSocket(u64),
+    #[error("the page that opened the websocket is gone")]
+    SocketClosed,
+    #[error("the websocket failed: {0}")]
+    Socket(String),
     #[error(transparent)]
     Url(#[from] url::ParseError),
 }

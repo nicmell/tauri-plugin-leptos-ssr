@@ -1,6 +1,6 @@
 # tauri-plugin-leptos-ssr
 
-Tauri 2 plugin that serves a cargo-leptos SSR app through the `leptos` URI scheme. GET and HEAD go through the scheme, buffered. Requests with a body, and GETs that accept `text/event-stream`, go through IPC with streamed responses: the `fetch`, `fetch_read_body` and `fetch_cancel_body` commands and the injected `src/fetch.js`, which also replaces `EventSource` on the plugin origin. Release builds dispatch to the app's axum router plus the embedded `frontendDist`. Dev builds forward to `build.devUrl`, the `cargo leptos watch` server. README.md has the full picture.
+Tauri 2 plugin that serves a cargo-leptos SSR app through the `leptos` URI scheme. GET and HEAD go through the scheme, buffered. Requests with a body, and GETs that accept `text/event-stream`, go through IPC with streamed responses: the `fetch`, `fetch_read_body` and `fetch_cancel_body` commands and the injected `src/fetch.js`, which also replaces `EventSource` and `WebSocket` on the plugin origin. Websockets use the `ws_open`, `ws_read`, `ws_send` and `ws_close` commands. Release builds dispatch to the app's axum router plus the embedded `frontendDist`. Dev builds forward to `build.devUrl`, the `cargo leptos watch` server. README.md has the full picture.
 
 Scope is macOS and Android. Behavior must stay the same on both: a mechanism that cannot work on Android fails the same way on macOS (the scheme's 405 for methods with a body is the model).
 
@@ -11,8 +11,10 @@ Scope is macOS and Android. Behavior must stay the same on both: a mechanism tha
 - `src/protocol.rs`: the scheme handler: GET/HEAD only, buffered within 20 s, redirects as pages, CORS header.
 - `src/proxy.rs`: dev forwarding with the hyper-util client, the retrying 502 page.
 - `src/assets.rs`: the embedded-site fallback (exact keys) and the startup checks.
+- `src/registry.rs`: what pages hold open, per webview: ids, and the page generations that drop a reloaded page's leftovers.
 - `src/streams.rs`: the open response bodies per webview: chunked reads with a 20 s idle answer, cancel, cleanup on page load and window close.
-- `src/commands.rs` and `src/fetch.js`: the IPC path. They share the response frame and the chunk flags, and tests on both sides pin them (`tests/fetch.test.mjs`, `tests/eventsource.test.mjs`).
+- `src/sockets.rs`: the open websockets per webview. A reader and a writer task each, the 1 MiB read-ahead, the record format, and close with 1001 on page load and window close. Release builds connect through `Dispatcher::connect`, an in-memory hyper connection to the router.
+- `src/commands.rs` and `src/fetch.js`: the IPC path. They share the response frame, the chunk flags and the socket records, and tests on both sides pin them (`tests/fetch.test.mjs`, `tests/eventsource.test.mjs`, `tests/websocket.test.mjs`).
 - `examples/tauri-app`: the demo, its own Cargo workspace with a committed lockfile. Its README has its commands.
 
 ## Commands

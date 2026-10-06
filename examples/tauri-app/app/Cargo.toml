@@ -11,9 +11,9 @@ leptos_meta.workspace = true
 leptos_router.workspace = true
 futures.workspace = true
 leptos_axum = { workspace = true, optional = true }
-axum = { workspace = true, optional = true }
+axum = { workspace = true, optional = true, features = ["ws"] }
 tokio = { workspace = true, optional = true, features = ["time"] }
-gloo-net = { workspace = true, optional = true, features = ["eventsource"] }
+gloo-net = { workspace = true, optional = true, features = ["eventsource", "websocket"] }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }

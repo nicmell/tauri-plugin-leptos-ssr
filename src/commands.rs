@@ -3,15 +3,18 @@ use axum::http::header::{HeaderMap, HeaderName, HeaderValue};
 use axum::http::response::Parts;
 use axum::http::{Method, Request};
 use percent_encoding::percent_decode_str;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{self, InvokeBody};
 use tauri::{Manager, Runtime, Webview, command};
 
+use crate::sockets::{self, Opened};
 use crate::streams::{self, Chunk};
 use crate::{Error, LeptosSsr, Result};
 
-/// The IPC header carrying the method, URL and headers of a `fetch` request:
-/// Tauri sets `Content-Type` on the IPC request itself.
+/// The IPC header carrying the head of a request with a body (`fetch`'s
+/// method, URL and headers, or `ws_send`'s socket): Tauri sets
+/// `Content-Type` on the IPC request itself.
 const REQUEST_HEADER: &str = "leptos-ssr-request";
 
 #[derive(Deserialize)]
@@ -19,6 +22,11 @@ struct RequestHead {
     method: String,
     url: String,
     headers: Vec<(String, String)>,
+}
+
+#[derive(Deserialize)]
+struct SendHead {
+    id: u64,
 }
 
 #[derive(Serialize)]
@@ -66,31 +74,102 @@ pub(crate) fn fetch_cancel_body<R: Runtime>(webview: Webview<R>, id: u64) {
     }
 }
 
-/// The request `fetch.js` sent: its head from [`REQUEST_HEADER`], its body
-/// raw (custom-protocol IPC) or as a number array (postMessage IPC).
-fn http_request(headers: &HeaderMap, body: &InvokeBody) -> Result<Request<Body>> {
-    let head = headers
-        .get(REQUEST_HEADER)
-        .ok_or_else(|| invalid(format!("missing `{REQUEST_HEADER}` header")))?;
-    let head = percent_decode_str(head.to_str().map_err(invalid)?)
-        .decode_utf8()
-        .map_err(invalid)?;
-    let head: RequestHead = serde_json::from_str(&head).map_err(invalid)?;
-    let body = match body {
-        InvokeBody::Raw(bytes) => bytes.clone(),
-        InvokeBody::Json(value) => Vec::<u8>::deserialize(value).map_err(invalid)?,
-    };
-
-    let url = url::Url::parse(&head.url)?;
-    let own = match url.scheme() {
-        "leptos" => url.host_str() == Some("localhost"),
-        "http" | "https" => url.host_str() == Some("leptos.localhost"),
-        _ => false,
-    };
-    if !own || url.port().is_some() {
-        return Err(Error::ForeignUrl(head.url));
+/// Opens a websocket to `url`, on the plugin's own origin only, within
+/// [`streams::IDLE`].
+#[command]
+pub(crate) async fn ws_open<R: Runtime>(
+    webview: Webview<R>,
+    url: String,
+    protocols: Vec<String>,
+) -> Result<Opened> {
+    let path = own_path(&url)?;
+    if let Some(bad) = protocols.iter().find(|protocol| !is_token(protocol)) {
+        return Err(invalid(format!("`{bad}` is not a subprotocol")));
     }
-    let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    let state = webview.state::<LeptosSsr>();
+    let label = webview.label();
+    let generation = state.sockets.generation(label);
+    let opening = state
+        .sockets
+        .open(&state.dispatcher, label, generation, &path, &protocols);
+    tokio::time::timeout(streams::IDLE, opening)
+        .await
+        .map_err(|_| Error::Socket(format!("{path} did not answer the upgrade")))?
+}
+
+/// The records of a websocket that arrived, as [`sockets::Record::encode`]
+/// writes them; none within [`streams::IDLE`] answers an empty batch.
+#[command]
+pub(crate) async fn ws_read<R: Runtime>(webview: Webview<R>, id: u64) -> Result<ipc::Response> {
+    let state = webview.state::<LeptosSsr>();
+    let batch = state
+        .sockets
+        .read(webview.label(), id, streams::IDLE)
+        .await?;
+    Ok(ipc::Response::new(batch))
+}
+
+/// Writes the records of the body to a websocket, whose id travels in
+/// [`REQUEST_HEADER`].
+#[command]
+pub(crate) async fn ws_send<R: Runtime>(
+    webview: Webview<R>,
+    request: ipc::Request<'_>,
+) -> Result<()> {
+    let head: SendHead = head(request.headers())?;
+    let messages = sockets::decode_sends(&raw_body(request.body())?)?;
+    let state = webview.state::<LeptosSsr>();
+    state
+        .sockets
+        .send(webview.label(), head.id, messages, streams::IDLE)
+        .await
+}
+
+/// Starts the close of a websocket: `code` is 1000 or 3000 to 4999, and
+/// `reason` at most 123 bytes.
+#[command]
+pub(crate) fn ws_close<R: Runtime>(
+    webview: Webview<R>,
+    id: u64,
+    code: Option<u16>,
+    reason: Option<String>,
+) -> Result<()> {
+    let frame = close_frame(code, reason)?;
+    match webview.try_state::<LeptosSsr>() {
+        Some(state) => state.sockets.close(webview.label(), id, frame),
+        None => Ok(()),
+    }
+}
+
+fn close_frame(code: Option<u16>, reason: Option<String>) -> Result<Option<sockets::CloseFrame>> {
+    let reason = reason.unwrap_or_default();
+    if reason.len() > 123 {
+        return Err(invalid("a close reason is at most 123 bytes"));
+    }
+    match code {
+        Some(code @ (1000 | 3000..=4999)) => Ok(Some(sockets::CloseFrame {
+            code: code.into(),
+            reason: reason.into(),
+        })),
+        Some(code) => Err(invalid(format!("{code} is not a close code a page sends"))),
+        None if reason.is_empty() => Ok(None),
+        None => Err(invalid("a close reason needs a code")),
+    }
+}
+
+/// An RFC 7230 token, as a subprotocol must be.
+fn is_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+/// The request `fetch.js` sent: its head from [`REQUEST_HEADER`], its body
+/// from [`raw_body`].
+fn http_request(headers: &HeaderMap, body: &InvokeBody) -> Result<Request<Body>> {
+    let head: RequestHead = head(headers)?;
+    let path = own_path(&head.url)?;
     let mut builder = Request::builder()
         .method(Method::from_bytes(head.method.as_bytes()).map_err(invalid)?)
         .uri(path);
@@ -100,7 +179,43 @@ fn http_request(headers: &HeaderMap, body: &InvokeBody) -> Result<Request<Body>>
             HeaderValue::from_str(value).map_err(invalid)?,
         );
     }
-    builder.body(Body::from(body)).map_err(invalid)
+    builder.body(Body::from(raw_body(body)?)).map_err(invalid)
+}
+
+/// The JSON head in [`REQUEST_HEADER`], percent-encoded.
+fn head<T: DeserializeOwned>(headers: &HeaderMap) -> Result<T> {
+    let head = headers
+        .get(REQUEST_HEADER)
+        .ok_or_else(|| invalid(format!("missing `{REQUEST_HEADER}` header")))?;
+    let head = percent_decode_str(head.to_str().map_err(invalid)?)
+        .decode_utf8()
+        .map_err(invalid)?;
+    serde_json::from_str(&head).map_err(invalid)
+}
+
+/// A request body: raw (custom-protocol IPC) or a number array (postMessage
+/// IPC).
+fn raw_body(body: &InvokeBody) -> Result<Vec<u8>> {
+    match body {
+        InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        InvokeBody::Json(value) => Vec::<u8>::deserialize(value).map_err(invalid),
+    }
+}
+
+/// The path and query of `url` when it is on the plugin's origin:
+/// `leptos://localhost`, or `leptos.localhost` over http, https, ws or wss,
+/// without a port.
+fn own_path(url: &str) -> Result<String> {
+    let parsed = url::Url::parse(url)?;
+    let own = match parsed.scheme() {
+        "leptos" => parsed.host_str() == Some("localhost"),
+        "http" | "https" | "ws" | "wss" => parsed.host_str() == Some("leptos.localhost"),
+        _ => false,
+    };
+    if !own || parsed.port().is_some() {
+        return Err(Error::ForeignUrl(url.to_owned()));
+    }
+    Ok(parsed[url::Position::BeforePath..url::Position::AfterQuery].to_owned())
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {
@@ -219,6 +334,75 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn own_paths_cover_the_origin_in_every_scheme() {
+        for url in [
+            "leptos://localhost/ws?x=1",
+            "http://leptos.localhost/ws?x=1",
+            "https://leptos.localhost/ws?x=1",
+            "ws://leptos.localhost/ws?x=1",
+            "wss://leptos.localhost/ws?x=1",
+        ] {
+            assert_eq!(own_path(url).expect(url), "/ws?x=1");
+        }
+        for url in [
+            "ws://localhost/ws",
+            "ws://leptos.localhost:3001/live_reload",
+            "wss://example.com/ws",
+            "ipc://localhost/x",
+        ] {
+            assert!(matches!(own_path(url), Err(Error::ForeignUrl(_))), "{url}");
+        }
+    }
+
+    #[test]
+    fn pages_close_with_their_own_codes_only() {
+        assert!(matches!(close_frame(None, None), Ok(None)));
+        for code in [1000, 3000, 4999] {
+            let frame = close_frame(Some(code), Some("bye".to_owned()))
+                .expect("a page code")
+                .expect("a frame");
+            assert_eq!(u16::from(frame.code), code);
+            assert_eq!(frame.reason.as_str(), "bye");
+        }
+        for (code, reason) in [
+            (Some(1001), None),
+            (Some(2999), None),
+            (Some(5000), None),
+            (Some(1000), Some("x".repeat(124))),
+            (None, Some("no code".to_owned())),
+        ] {
+            assert!(
+                matches!(close_frame(code, reason), Err(Error::InvalidRequest(_))),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subprotocols_are_tokens() {
+        assert!(is_token("chat.v2"));
+        assert!(!is_token(""));
+        assert!(!is_token("a b"));
+        assert!(!is_token("a,b"));
+    }
+
+    #[test]
+    fn socket_sends_come_raw_or_as_number_arrays() {
+        let record = [0, 0, 0, 0, 2, b'h', b'i'];
+        for body in [
+            InvokeBody::Raw(record.to_vec()),
+            InvokeBody::Json(serde_json::json!(record)),
+        ] {
+            let messages =
+                sockets::decode_sends(&raw_body(&body).expect("a body")).expect("records");
+            assert_eq!(
+                messages,
+                [tokio_tungstenite::tungstenite::Message::text("hi")]
+            );
+        }
     }
 
     #[test]

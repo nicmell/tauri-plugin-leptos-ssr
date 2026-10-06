@@ -1,3 +1,11 @@
 [default]
-description = "Lets the plugin's pages send requests with a body over IPC and read streamed responses"
-permissions = ["allow-fetch", "allow-fetch-read-body", "allow-fetch-cancel-body"]
+description = "Lets the plugin's pages send requests with a body over IPC, read streamed responses, and open websockets"
+permissions = [
+  "allow-fetch",
+  "allow-fetch-read-body",
+  "allow-fetch-cancel-body",
+  "allow-ws-open",
+  "allow-ws-read",
+  "allow-ws-send",
+  "allow-ws-close",
+]

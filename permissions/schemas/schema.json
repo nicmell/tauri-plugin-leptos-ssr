@@ -331,10 +331,58 @@
           "markdownDescription": "Denies the fetch_read_body command without any pre-configured scope."
         },
         {
-          "description": "Lets the plugin's pages send requests with a body over IPC and read streamed responses\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-read-body`\n- `allow-fetch-cancel-body`",
+          "description": "Enables the ws_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ws-close",
+          "markdownDescription": "Enables the ws_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ws_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ws-close",
+          "markdownDescription": "Denies the ws_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ws_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ws-open",
+          "markdownDescription": "Enables the ws_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ws_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ws-open",
+          "markdownDescription": "Denies the ws_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ws_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ws-read",
+          "markdownDescription": "Enables the ws_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ws_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ws-read",
+          "markdownDescription": "Denies the ws_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ws_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ws-send",
+          "markdownDescription": "Enables the ws_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ws_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ws-send",
+          "markdownDescription": "Denies the ws_send command without any pre-configured scope."
+        },
+        {
+          "description": "Lets the plugin's pages send requests with a body over IPC, read streamed responses, and open websockets\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-read-body`\n- `allow-fetch-cancel-body`\n- `allow-ws-open`\n- `allow-ws-read`\n- `allow-ws-send`\n- `allow-ws-close`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Lets the plugin's pages send requests with a body over IPC and read streamed responses\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-read-body`\n- `allow-fetch-cancel-body`"
+          "markdownDescription": "Lets the plugin's pages send requests with a body over IPC, read streamed responses, and open websockets\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-read-body`\n- `allow-fetch-cancel-body`\n- `allow-ws-open`\n- `allow-ws-read`\n- `allow-ws-send`\n- `allow-ws-close`"
         }
       ]
     }
