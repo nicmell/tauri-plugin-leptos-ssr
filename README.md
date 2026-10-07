@@ -19,7 +19,7 @@ Responses on the IPC path stream. The `fetch` command answers with the head and 
 
 When a page loads or its window closes, the plugin drops every open response body of that webview. In dev, that closes the connection to the watch server. In release builds, it stops the app's stream.
 
-Websockets to the plugin's origin also take the IPC path. The script replaces `WebSocket` there with a class that opens the socket through the `ws_open` command, so the app's websocket routes work without changes, Leptos websocket server functions included.
+Websockets to the plugin's origin also take the IPC path. The script replaces `WebSocket` there with a class that opens the socket through the `ws_open` command. So the app's websocket routes work without changes, Leptos websocket server functions included.
 
 - In release builds, the plugin connects to the router in process, over an in-memory connection. The app opens no port for it.
 - In dev builds, the plugin connects to the watch server.
@@ -55,13 +55,17 @@ These steps follow the demo in [`examples/tauri-app`](examples/tauri-app), which
    use tauri_plugin_leptos_ssr::LeptosSsrExt;
 
    tauri::Builder::default()
-       .plugin(tauri_plugin_leptos_ssr::init(app::router))
+       .plugin(tauri_plugin_leptos_ssr::init(|_app, options| {
+           Ok(app::router(options))
+       }))
        .setup(|app| {
            let url = app.leptos_ssr().webview_url("/")?;
            tauri::WebviewWindowBuilder::new(app, "main", url).build()?;
            Ok(())
        })
    ```
+
+   The closure gets the `AppHandle`, so the router can use the paths, the state and the plugins of the app. It runs once, in release builds only. If it returns an error, the setup of the plugin fails, and the app does not start.
 
 3. Set the `build` section of `tauri.conf.json`, and set `app.windows` to `[]`:
 
@@ -100,7 +104,7 @@ The Tauri build compiles the SSR side with plain cargo, not with cargo-leptos. T
 - Keep `hash-files` off. The plugin serves the bundle under its plain name.
 - The `.taurignore` matters in dev. `tauri dev` watches the path dependencies of the Tauri crate. Without it, every UI edit restarts the app, although in dev the app only forwards to the watch server.
 
-In dev builds, server functions run in the `cargo leptos watch` process. That process has no Tauri `AppHandle`. Call Tauri commands from the browser for native work, as the demo does with `greet`.
+In dev builds, server functions run in the `cargo leptos watch` process. That process has no Tauri `AppHandle`, and the router closure does not run. Call Tauri commands from the browser for native work, as the demo does with `greet`.
 
 ## Limits
 

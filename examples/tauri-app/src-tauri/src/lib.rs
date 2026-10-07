@@ -16,7 +16,9 @@ pub fn run() {
                 .level_for("tauri_plugin_leptos_ssr", log::LevelFilter::Debug)
                 .build(),
         )
-        .plugin(tauri_plugin_leptos_ssr::init(app::router))
+        .plugin(tauri_plugin_leptos_ssr::init(|_app, options| {
+            Ok(app::router(options))
+        }))
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
             let url = app.leptos_ssr().webview_url("/")?;
