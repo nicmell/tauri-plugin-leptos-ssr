@@ -2,8 +2,13 @@ use serde::{Serialize, ser::Serializer};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The error that the app's router closure returns.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("the app's router failed: {0}")]
+    Router(BoxError),
     #[error("`build.devUrl` is not set: point it at the `cargo leptos watch` server")]
     DevUrlUnset,
     #[error("`build.devUrl` must be an http:// URL, got `{0}`")]

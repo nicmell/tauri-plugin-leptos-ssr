@@ -22,7 +22,7 @@ mod streams;
 #[cfg(test)]
 mod testing;
 
-pub use error::{Error, Result};
+pub use error::{BoxError, Error, Result};
 
 use dispatch::Dispatcher;
 use sockets::Sockets;
@@ -78,12 +78,15 @@ impl<R: Runtime, T: Manager<R>> LeptosSsrExt<R> for T {
 }
 
 /// Initializes the plugin. `router` builds the app's router (pages and server
-/// functions) from the plugin's [`LeptosOptions`]; it runs in release builds
-/// only, dev builds forward to `build.devUrl`.
+/// functions) from the app handle and the plugin's [`LeptosOptions`]. It runs
+/// once, in release builds only: dev builds forward to `build.devUrl`. An
+/// error from it fails the plugin's setup, so the app does not start.
 pub fn init<R, F>(router: F) -> TauriPlugin<R>
 where
     R: Runtime,
-    F: FnOnce(LeptosOptions) -> axum::Router + Send + 'static,
+    F: FnOnce(&AppHandle<R>, LeptosOptions) -> std::result::Result<axum::Router, BoxError>
+        + Send
+        + 'static,
 {
     Builder::new("leptos-ssr")
         .register_asynchronous_uri_scheme_protocol(SCHEME, protocol::handle)
@@ -147,7 +150,7 @@ fn fetch_script() -> String {
 fn release_router<R, F>(app: &AppHandle<R>, router: F) -> Result<axum::Router>
 where
     R: Runtime,
-    F: FnOnce(LeptosOptions) -> axum::Router,
+    F: FnOnce(&AppHandle<R>, LeptosOptions) -> std::result::Result<axum::Router, BoxError>,
 {
     let output_name = option_env!("LEPTOS_OUTPUT_NAME").ok_or(Error::OutputNameUnset)?;
     let resolver = app.asset_resolver();
@@ -166,8 +169,9 @@ where
     // Leptos route generation spawns on the current tokio runtime.
     let runtime = tauri::async_runtime::handle();
     let _guard = runtime.inner().enter();
+    let router = router(app, options).map_err(Error::Router)?;
     let resolver = Arc::new(resolver);
-    Ok(assets::fallback(router(options), keys, move |path| {
+    Ok(assets::fallback(router, keys, move |path| {
         resolver
             .get(path.to_owned())
             .map(|asset| (asset.bytes, asset.mime_type))
