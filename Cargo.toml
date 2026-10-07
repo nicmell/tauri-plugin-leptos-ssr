@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-leptos-ssr"
-version = "0.2.0"
+version = "0.3.0"
 description = "Serve a cargo-leptos SSR app inside a Tauri app through a custom URI scheme"
 edition = "2024"
 rust-version = "1.90"

@@ -6,7 +6,7 @@ Scope is macOS and Android. Behavior must stay the same on both: a mechanism tha
 
 ## Layout
 
-- `src/lib.rs`: `init(router)`, `LeptosSsr`, `webview_url`, setup (dev proxy or release router).
+- `src/lib.rs`: `init(router)`, `LeptosSsr`, `webview_url`, setup (dev proxy or release router). The router closure gets the `AppHandle` and can fail.
 - `src/dispatch.rs`: the dispatcher behind both entry points: header hygiene, request log. It returns unread bodies.
 - `src/protocol.rs`: the scheme handler: GET/HEAD only, buffered within 20 s, redirects as pages, CORS header.
 - `src/proxy.rs`: dev forwarding with the hyper-util client, the retrying 502 page.
@@ -14,7 +14,7 @@ Scope is macOS and Android. Behavior must stay the same on both: a mechanism tha
 - `src/registry.rs`: what pages hold open, per webview: ids, and the page generations that drop a reloaded page's leftovers.
 - `src/streams.rs`: the open response bodies per webview: chunked reads with a 20 s idle answer, cancel, cleanup on page load and window close.
 - `src/sockets.rs`: the open websockets per webview. A reader and a writer task each, the 1 MiB read-ahead, the record format, and close with 1001 on page load and window close. Release builds connect through `Dispatcher::connect`, an in-memory hyper connection to the router.
-- `src/commands.rs` and `src/fetch.js`: the IPC path. They share the response frame, the chunk flags and the socket records, and tests on both sides pin them (`tests/fetch.test.mjs`, `tests/eventsource.test.mjs`, `tests/websocket.test.mjs`).
+- `src/commands.rs` and `src/fetch.js`: the IPC path. They share the response frame, the chunk flags and the socket records. Tests on both sides pin them (`tests/fetch.test.mjs`, `tests/eventsource.test.mjs`, `tests/websocket.test.mjs`).
 - `examples/tauri-app`: the demo, its own Cargo workspace with a committed lockfile. Its README has its commands.
 
 ## Commands
