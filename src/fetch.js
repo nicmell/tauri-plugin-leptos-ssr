@@ -1,5 +1,5 @@
-// Sends same-origin requests with a body from the plugin's pages over IPC:
-// custom-protocol requests reach the app without a body on Android.
+// Sends the requests with a body, the event streams and the websockets of
+// the plugin's pages over IPC (README.md, "How it works").
 ;(function () {
   const origin = new URL(__LEPTOS_SSR_ORIGIN__)
   // URL.origin is "null" for non-special schemes such as leptos:
@@ -12,6 +12,10 @@
   const nativeFetch = window.fetch
   const invoke = (cmd, payload, options) =>
     window.__TAURI_INTERNALS__.invoke(cmd, payload, options)
+  // The ids that src/calls.rs runs once.
+  const page = Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join('')
+  let calls = 0
+  const nextCall = () => `${page}.${++calls}`
   const nullBodyStatuses = [101, 103, 204, 205, 304]
   const LAST = 1
   const IDLE = 2
@@ -65,8 +69,7 @@
     })
   }
 
-  // A frame from the `fetch` command: a big-endian u32 head length, the JSON
-  // head, then the bytes already available.
+  // A frame as `frame` in src/commands.rs builds it.
   function decode(raw) {
     const frame = bytesOf(raw)
     const headLength = new DataView(
@@ -154,7 +157,8 @@
       JSON.stringify({
         method: request.method,
         url: request.url,
-        headers: Array.from(request.headers.entries())
+        headers: Array.from(request.headers.entries()),
+        call: nextCall()
       })
     )
     // A plain object: Tauri sends a Headers instance as `{}` over postMessage.
@@ -438,8 +442,8 @@
   window.EventSource = EventSource
 
   // Websockets to the plugin's origin, over the `ws_*` commands (WHATWG
-  // WebSocket interface). Both directions carry records: a kind byte, a
-  // big-endian u32 length, the payload.
+  // WebSocket interface). Both directions carry records as `Record::encode`
+  // in src/sockets.rs writes them.
   const NativeWebSocket = window.WebSocket
   const TEXT = 0
   const BINARY = 1
@@ -625,7 +629,7 @@
     async #open(protocols) {
       let opened
       try {
-        opened = await invoke('plugin:leptos-ssr|ws_open', { url: this.#url, protocols })
+        opened = await invoke('plugin:leptos-ssr|ws_open', { url: this.#url, protocols, call: nextCall() })
       } catch {
         this.#fail()
         return

@@ -18,8 +18,11 @@ use crate::{Error, Result};
 /// never split, so one read can exceed it by one frame.
 pub(crate) const CHUNK: usize = 64 * 1024;
 
-// A pending `ipc://` request that WebKit gives up on makes Tauri resend it
-// over postMessage, so a read would run twice; reads answer well before.
+// A read that WebKit cancels comes back over postMessage (src/calls.rs) and
+// would race the first one for the next data. WebKit cancels on navigation,
+// when the plugin drops the page's streams anyway. Without one, a pending
+// request stayed open 20 min (macOS 26.6.2).
+/// The longest a command waits before it answers.
 pub(crate) const IDLE: Duration = Duration::from_secs(20);
 
 /// What one read returns.
@@ -382,8 +385,15 @@ mod tests {
 
     #[test]
     fn chunks_carry_their_flag() {
-        assert_eq!(Chunk::Data(b"a".to_vec()).into_bytes(), b"\x00a");
-        assert_eq!(Chunk::Last(Vec::new()).into_bytes(), b"\x01");
-        assert_eq!(Chunk::Idle.into_bytes(), b"\x02");
+        for vector in testing::wire()["chunks"].as_array().expect("chunks") {
+            let data = vector["data"].as_str().expect("data").as_bytes().to_vec();
+            let chunk = match vector["flag"].as_str() {
+                Some("data") => Chunk::Data(data),
+                Some("last") => Chunk::Last(data),
+                Some("idle") => Chunk::Idle,
+                flag => panic!("unknown flag {flag:?}"),
+            };
+            assert_eq!(chunk.into_bytes(), testing::bytes(&vector["bytes"]));
+        }
     }
 }

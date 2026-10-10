@@ -11,6 +11,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WindowEvent};
 
 mod assets;
+mod calls;
 mod commands;
 mod dispatch;
 mod error;
@@ -24,6 +25,7 @@ mod testing;
 
 pub use error::{BoxError, Error, Result};
 
+use calls::Calls;
 use dispatch::Dispatcher;
 use sockets::Sockets;
 use streams::Streams;
@@ -42,6 +44,7 @@ pub struct LeptosSsr {
     dispatcher: Dispatcher,
     streams: Streams,
     sockets: Sockets,
+    calls: Calls,
 }
 
 impl LeptosSsr {
@@ -135,6 +138,7 @@ where
                 dispatcher,
                 streams: Streams::default(),
                 sockets: Sockets::default(),
+                calls: Calls::default(),
             });
             Ok(())
         })

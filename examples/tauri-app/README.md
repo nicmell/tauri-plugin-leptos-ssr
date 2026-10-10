@@ -78,8 +78,4 @@ cargo test --workspace
 
 ## Dependencies
 
-Every lockfile in this repo resolves only crates that are at least 7 days old. To refresh `Cargo.lock`, set the cutoff date and run:
-
-```bash
-RUSTC_BOOTSTRAP=1 cargo generate-lockfile -Zunstable-options --publish-time 2026-09-27T00:00:00Z
-```
+Every lockfile in this repo resolves only crates that are at least 7 days old. To refresh `Cargo.lock`, run the `generate-lockfile` command from the root `CLAUDE.md`, under "Conventions", in this directory.

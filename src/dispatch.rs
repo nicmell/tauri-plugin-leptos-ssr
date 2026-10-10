@@ -1,8 +1,10 @@
 use std::fmt::Display;
+use std::panic::AssertUnwindSafe;
 
 use axum::body::{Body, HttpBody};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Request, Response, StatusCode, Uri};
+use futures_util::{FutureExt, StreamExt};
 use http_body_util::BodyExt;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
@@ -11,7 +13,7 @@ use tower::ServiceExt;
 
 use crate::proxy::Proxy;
 
-/// Where requests for the plugin's scheme and its `fetch` command go.
+/// Where the plugin's scheme, its `fetch` command and its websockets go.
 pub(crate) enum Dispatcher {
     /// The app's router, in-process (release builds).
     Router(axum::Router),
@@ -51,8 +53,14 @@ impl Dispatcher {
 
         let mut response = match self {
             Self::Router(router) => {
-                let Ok(response) = router.clone().oneshot(request).await;
-                response
+                let call = AssertUnwindSafe(router.clone().oneshot(request)).catch_unwind();
+                match call.await {
+                    Ok(Ok(response)) => response.map(unwinding),
+                    Err(_) => {
+                        log::error!("{method} {uri}: {PANICKED}");
+                        text(StatusCode::INTERNAL_SERVER_ERROR, PANICKED).map(Body::from)
+                    }
+                }
             }
             Self::Proxy(proxy) => proxy.forward(request).await,
         };
@@ -88,14 +96,26 @@ impl Dispatcher {
     }
 }
 
+/// The answer to a request that the app panicked on.
+const PANICKED: &str = "the app panicked";
+
+/// `body`, with a panic while it is read turned into an error.
+fn unwinding(body: Body) -> Body {
+    Body::from_stream(
+        AssertUnwindSafe(body.into_data_stream())
+            .catch_unwind()
+            .map(|data| data.unwrap_or_else(|_| Err(axum::Error::new(PANICKED)))),
+    )
+}
+
 /// A stream that a websocket upgrade can run over.
 pub(crate) trait Upgradable: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Upgradable for T {}
 
+// axum's `WebSocketUpgrade` takes its upgrade from a hyper connection, which
+// `oneshot` on the router cannot give it.
 /// One end of an in-memory connection whose other end the router serves.
-/// axum's `WebSocketUpgrade` takes its upgrade from a hyper connection, which
-/// `oneshot` on the router cannot give it.
 fn serve_in_memory(router: axum::Router) -> tokio::io::DuplexStream {
     let (client, server) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
@@ -185,10 +205,23 @@ mod tests {
             )
             .route("/echo", post(|body: String| async move { body }))
             .route("/marker", get(marker))
+            .route("/panic", get(panic))
+            .route(
+                "/panic-later",
+                get(|| async { Body::from_stream(panic_later()) }),
+            )
     }
 
     async fn marker(headers: HeaderMap) -> String {
         format!("{:?}", headers.get(MARKER))
+    }
+
+    async fn panic() -> &'static str {
+        panic!("the handler panics")
+    }
+
+    fn panic_later() -> impl futures_util::Stream<Item = std::io::Result<axum::body::Bytes>> {
+        futures_util::stream::poll_fn(|_| panic!("the body panics"))
     }
 
     fn request(method: &str, uri: &str, body: &str) -> Request<Body> {
@@ -262,6 +295,19 @@ mod tests {
             response.body(),
             format!("Some({:?})", crate::ORIGIN).as_bytes()
         );
+    }
+
+    #[tokio::test]
+    async fn a_panic_answers_500() {
+        for uri in ["leptos://localhost/panic", "leptos://localhost/panic-later"] {
+            let response = call("GET", uri, "").await;
+            assert_eq!(
+                response.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{uri}"
+            );
+            assert_eq!(response.body(), PANICKED.as_bytes(), "{uri}");
+        }
     }
 
     #[tokio::test]

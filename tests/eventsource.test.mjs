@@ -4,25 +4,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
+import { chunk, frame } from './wire.mjs'
+
 const source = readFileSync(new URL('../src/fetch.js', import.meta.url), 'utf8')
 
 const MACOS = 'leptos://localhost'
 const encoder = new TextEncoder()
-
-function frame(status, headers, id) {
-  const head = encoder.encode(JSON.stringify({ status, headers, id }))
-  const out = new Uint8Array(4 + head.length)
-  new DataView(out.buffer).setUint32(0, head.length)
-  out.set(head, 4)
-  return out.buffer
-}
-
-function chunk(flag, bytes = new Uint8Array()) {
-  const out = new Uint8Array(1 + bytes.length)
-  out[0] = flag
-  out.set(bytes, 1)
-  return out.buffer
-}
 
 class NativeEventSource {
   constructor(url) {
@@ -64,7 +51,7 @@ function page(streams) {
           if (item === 'end') {
             return chunk(1)
           }
-          return chunk(0, typeof item === 'string' ? encoder.encode(item) : item)
+          return chunk(0, item)
         }
         if (cmd === 'plugin:leptos-ssr|fetch_cancel_body') {
           cancelled.push(payload.id)

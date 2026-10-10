@@ -4,11 +4,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
+import { batch, bytes, wire } from './wire.mjs'
+
 const source = readFileSync(new URL('../src/fetch.js', import.meta.url), 'utf8')
 
 const MACOS = 'leptos://localhost'
 const ANDROID = 'http://leptos.localhost'
-const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
 // Node 22 has no CloseEvent.
@@ -37,37 +38,6 @@ function deferred() {
     reject = no
   })
   return { promise, resolve, reject }
-}
-
-// Records as the plugin sends them: ['text', 'hi'], ['binary', [1, 2]],
-// ['close', 1000, 'bye'] or ['error', 'why'].
-function batch(...items) {
-  const parts = items.map(([kind, ...rest]) => {
-    if (kind === 'text') {
-      return [0, encoder.encode(rest[0])]
-    }
-    if (kind === 'binary') {
-      return [1, Uint8Array.from(rest[0])]
-    }
-    if (kind === 'close') {
-      const reason = encoder.encode(rest[1] ?? '')
-      const payload = new Uint8Array(2 + reason.length)
-      new DataView(payload.buffer).setUint16(0, rest[0])
-      payload.set(reason, 2)
-      return [2, payload]
-    }
-    return [3, encoder.encode(rest[0])]
-  })
-  const out = new Uint8Array(parts.reduce((length, [, payload]) => length + 5 + payload.length, 0))
-  const view = new DataView(out.buffer)
-  let offset = 0
-  for (const [kind, payload] of parts) {
-    out[offset] = kind
-    view.setUint32(offset + 1, payload.length)
-    out.set(payload, offset + 5)
-    offset += 5 + payload.length
-  }
-  return out.buffer
 }
 
 // The records of a `ws_send` body, as ['text', string] or ['binary', bytes].
@@ -177,7 +147,9 @@ test('it opens with its protocol, then delivers text and binary by binaryType', 
   const events = []
   socket.onopen = () => events.push(['open', socket.readyState, socket.protocol])
   socket.addEventListener('message', (event) => events.push(['message', event.data, event.origin]))
-  assert.deepEqual(called('ws_open')[0].payload, { url: `${MACOS}/ws`, protocols: ['chat'] })
+  const { call, ...open } = called('ws_open')[0].payload
+  assert.deepEqual(open, { url: `${MACOS}/ws`, protocols: ['chat'] })
+  assert.match(call, /^[0-9a-z]+\.1$/)
   opens[0].resolve({ id: 7, protocol: 'chat', extensions: '' })
   await until(() => reads.length === 1)
   assert.deepEqual(called('ws_read')[0].payload, { id: 7 })
@@ -228,6 +200,20 @@ test('sends wait for the open, copy their data, and go out in order and in batch
   ])
   sends[1].resolve(null)
   await until(() => socket.bufferedAmount === 0)
+})
+
+test('sends match the vectors of tests/wire.json', async () => {
+  const { window, called, opens, sends } = page()
+  const socket = await opened(window, opens)
+  for (const [n, vector] of wire.sends.entries()) {
+    socket.send('text' in vector ? vector.text : Uint8Array.from(vector.binary))
+    await until(() => sends.length === n + 1)
+    sends[n].resolve(null)
+  }
+  assert.deepEqual(
+    called('ws_send').map(({ payload }) => payload),
+    wire.sends.map((vector) => bytes(vector.bytes))
+  )
 })
 
 test('close checks its arguments, waits for the sends, and ends cleanly', async () => {
