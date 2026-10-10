@@ -18,8 +18,11 @@ use crate::{Error, Result};
 /// never split, so one read can exceed it by one frame.
 pub(crate) const CHUNK: usize = 64 * 1024;
 
-// A pending `ipc://` request that WebKit gives up on makes Tauri resend it
-// over postMessage, so a read would run twice; reads answer well before.
+// A read that WebKit cancels comes back over postMessage (src/calls.rs) and
+// would race the first one for the next data. WebKit cancels on navigation,
+// when the plugin drops the page's streams anyway. Without one, a pending
+// request stayed open 20 min (macOS 26.6.2).
+/// The longest a command waits before it answers.
 pub(crate) const IDLE: Duration = Duration::from_secs(20);
 
 /// What one read returns.
