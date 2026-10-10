@@ -14,6 +14,11 @@ mod bindings {
 /// The `greet` command of the Tauri app.
 #[cfg(feature = "hydrate")]
 pub async fn greet(name: &str) -> Result<String, String> {
+    // Without the global, the binding throws past `catch` and the caller's
+    // task never finishes.
+    if !js_sys::Reflect::has(&js_sys::global(), &"__TAURI__".into()).unwrap_or(false) {
+        return Err("Tauri commands run in the Tauri app only.".to_owned());
+    }
     let args = js_sys::Object::new();
     js_sys::Reflect::set(&args, &"name".into(), &name.into())
         .map_err(|error| format!("{error:?}"))?;
