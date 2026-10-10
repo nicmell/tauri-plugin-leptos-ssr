@@ -69,8 +69,7 @@
     })
   }
 
-  // A frame from the `fetch` command: a big-endian u32 head length, the JSON
-  // head, then the bytes already available.
+  // A frame as `frame` in src/commands.rs builds it.
   function decode(raw) {
     const frame = bytesOf(raw)
     const headLength = new DataView(
@@ -443,8 +442,8 @@
   window.EventSource = EventSource
 
   // Websockets to the plugin's origin, over the `ws_*` commands (WHATWG
-  // WebSocket interface). Both directions carry records: a kind byte, a
-  // big-endian u32 length, the payload.
+  // WebSocket interface). Both directions carry records as `Record::encode`
+  // in src/sockets.rs writes them.
   const NativeWebSocket = window.WebSocket
   const TEXT = 0
   const BINARY = 1

@@ -467,6 +467,7 @@ mod tests {
 
     use super::*;
     use crate::proxy::Proxy;
+    use crate::testing;
 
     const SHORT: Duration = Duration::from_millis(100);
 
@@ -853,31 +854,49 @@ mod tests {
         assert_eq!(binaries, 50);
     }
 
+    /// The binary payload of a `tests/wire.json` vector.
+    fn binary(vector: &serde_json::Value) -> Option<Vec<u8>> {
+        let bytes = vector["binary"].as_array()?;
+        Some(bytes.iter().map(testing::byte).collect())
+    }
+
     #[test]
     fn records_have_exact_bytes() {
-        let mut bytes = Vec::new();
-        Record::Text("hi".to_owned()).encode(&mut bytes);
-        Record::Binary(vec![9]).encode(&mut bytes);
-        Record::Close(1000, "x".to_owned()).encode(&mut bytes);
-        Record::Error("e".to_owned()).encode(&mut bytes);
-        assert_eq!(
-            bytes,
-            [
-                0, 0, 0, 0, 2, b'h', b'i', //
-                1, 0, 0, 0, 1, 9, //
-                2, 0, 0, 0, 3, 0x03, 0xe8, b'x', //
-                3, 0, 0, 0, 1, b'e',
-            ]
-        );
+        for vector in testing::wire()["records"].as_array().expect("records") {
+            let string = |key: &str| vector[key].as_str().map(str::to_owned);
+            let record = if let Some(text) = string("text") {
+                Record::Text(text)
+            } else if let Some(data) = binary(vector) {
+                Record::Binary(data)
+            } else if let Some(close) = vector["close"].as_array() {
+                let code = close[0].as_u64().and_then(|code| u16::try_from(code).ok());
+                let reason = close[1].as_str().expect("a reason").to_owned();
+                Record::Close(code.expect("a code"), reason)
+            } else {
+                Record::Error(string("error").expect("a record"))
+            };
+            let mut bytes = Vec::new();
+            record.encode(&mut bytes);
+            assert_eq!(bytes, testing::bytes(&vector["bytes"]), "{vector}");
+        }
     }
 
     #[test]
     fn sends_decode_text_and_binary_only() {
-        let body = [0, 0, 0, 0, 2, b'h', b'i', 1, 0, 0, 0, 2, 1, 2];
-        assert_eq!(
-            decode_sends(&body).expect("valid"),
-            [Message::text("hi"), Message::binary(vec![1, 2])]
-        );
+        let wire = testing::wire();
+        let sends = wire["sends"].as_array().expect("sends");
+        let body: Vec<u8> = sends
+            .iter()
+            .flat_map(|vector| testing::bytes(&vector["bytes"]))
+            .collect();
+        let messages: Vec<Message> = sends
+            .iter()
+            .map(|vector| match vector["text"].as_str() {
+                Some(text) => Message::text(text),
+                None => Message::binary(binary(vector).expect("text or binary")),
+            })
+            .collect();
+        assert_eq!(decode_sends(&body).expect("valid"), messages);
         for bad in [
             &[0, 0, 0, 0, 1, 0xff][..],
             &[0, 0, 0, 0, 5, b'h'][..],

@@ -436,22 +436,24 @@ mod tests {
 
     #[test]
     fn frames_carry_head_and_initial_bytes() {
+        let vector = &testing::wire()["frame"];
+        let text = |value: &serde_json::Value| value.as_str().expect("text").to_owned();
         let mut response = Response::new(());
-        *response.status_mut() = StatusCode::CREATED;
-        response
-            .headers_mut()
-            .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        *response.status_mut() = vector["status"]
+            .as_u64()
+            .and_then(|status| StatusCode::from_u16(u16::try_from(status).ok()?).ok())
+            .expect("a status");
+        for pair in vector["headers"].as_array().expect("headers") {
+            response.headers_mut().insert(
+                HeaderName::from_bytes(text(&pair[0]).as_bytes()).expect("a name"),
+                HeaderValue::from_str(&text(&pair[1])).expect("a value"),
+            );
+        }
         let (parts, ()) = response.into_parts();
 
-        let frame = frame(&parts, Some(7), b"body").expect("frame");
-        let length = u32::from_be_bytes(frame[..4].try_into().expect("4 bytes")) as usize;
-        let head: serde_json::Value =
-            serde_json::from_slice(&frame[4..4 + length]).expect("json head");
-        assert_eq!(head["status"], 201);
-        assert_eq!(head["headers"][0][0], "content-type");
-        assert_eq!(head["headers"][0][1], "text/plain");
-        assert_eq!(head["id"], 7);
-        assert_eq!(&frame[4 + length..], b"body");
+        let body = text(&vector["body"]);
+        let frame = frame(&parts, vector["id"].as_u64(), body.as_bytes()).expect("frame");
+        assert_eq!(frame, testing::bytes(&vector["bytes"]));
     }
 
     /// A route answering its one request with `body`.

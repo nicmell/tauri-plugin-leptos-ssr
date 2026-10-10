@@ -1,0 +1,24 @@
+{
+  "frame": {
+    "status": 201,
+    "headers": [["content-type", "text/plain"]],
+    "id": 7,
+    "body": "body",
+    "bytes": [0, 0, 0, 63, "{\"status\":201,\"headers\":[[\"content-type\",\"text/plain\"]],\"id\":7}", "body"]
+  },
+  "chunks": [
+    { "flag": "data", "data": "a", "bytes": [0, "a"] },
+    { "flag": "last", "data": "b", "bytes": [1, "b"] },
+    { "flag": "idle", "data": "", "bytes": [2] }
+  ],
+  "records": [
+    { "text": "hi", "bytes": [0, 0, 0, 0, 2, "hi"] },
+    { "binary": [9], "bytes": [1, 0, 0, 0, 1, 9] },
+    { "close": [1000, "x"], "bytes": [2, 0, 0, 0, 3, 3, 232, "x"] },
+    { "error": "e", "bytes": [3, 0, 0, 0, 1, "e"] }
+  ],
+  "sends": [
+    { "text": "hi", "bytes": [0, 0, 0, 0, 2, "hi"] },
+    { "binary": [1, 2], "bytes": [1, 0, 0, 0, 2, 1, 2] }
+  ]
+}

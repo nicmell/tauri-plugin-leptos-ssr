@@ -3,32 +3,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
+import { chunk, frame } from './wire.mjs'
+
 const source = readFileSync(new URL('../src/fetch.js', import.meta.url), 'utf8')
 
 const MACOS = 'leptos://localhost'
 const ANDROID = 'http://leptos.localhost'
-const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-
-// A response frame as `src/commands.rs` builds it.
-function frame(status, headers = [], id = null, initial = '') {
-  const head = encoder.encode(JSON.stringify({ status, headers, id }))
-  const bytes = encoder.encode(initial)
-  const out = new Uint8Array(4 + head.length + bytes.length)
-  new DataView(out.buffer).setUint32(0, head.length)
-  out.set(head, 4)
-  out.set(bytes, 4 + head.length)
-  return out.buffer
-}
-
-// A body chunk as `Chunk::into_bytes` builds it: 0 data, 1 last, 2 idle.
-function chunk(flag, text = '') {
-  const bytes = encoder.encode(text)
-  const out = new Uint8Array(1 + bytes.length)
-  out[0] = flag
-  out.set(bytes, 1)
-  return out.buffer
-}
 
 function deferred() {
   let resolve

@@ -385,8 +385,15 @@ mod tests {
 
     #[test]
     fn chunks_carry_their_flag() {
-        assert_eq!(Chunk::Data(b"a".to_vec()).into_bytes(), b"\x00a");
-        assert_eq!(Chunk::Last(Vec::new()).into_bytes(), b"\x01");
-        assert_eq!(Chunk::Idle.into_bytes(), b"\x02");
+        for vector in testing::wire()["chunks"].as_array().expect("chunks") {
+            let data = vector["data"].as_str().expect("data").as_bytes().to_vec();
+            let chunk = match vector["flag"].as_str() {
+                Some("data") => Chunk::Data(data),
+                Some("last") => Chunk::Last(data),
+                Some("idle") => Chunk::Idle,
+                flag => panic!("unknown flag {flag:?}"),
+            };
+            assert_eq!(chunk.into_bytes(), testing::bytes(&vector["bytes"]));
+        }
     }
 }

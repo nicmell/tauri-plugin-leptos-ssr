@@ -1,4 +1,5 @@
-//! A response body the test feeds frame by frame.
+//! Test support: a response body the test feeds frame by frame, and the
+//! vectors of `tests/wire.json`.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -54,4 +55,29 @@ pub(crate) fn channel() -> (mpsc::UnboundedSender<Bytes>, Body, Arc<AtomicUsize>
         drops: drops.clone(),
     };
     (tx, Body::new(body), drops)
+}
+
+/// The vectors of `tests/wire.json`.
+pub(crate) fn wire() -> serde_json::Value {
+    serde_json::from_str(include_str!("../tests/wire.json")).expect("valid tests/wire.json")
+}
+
+/// The bytes of a vector's list.
+pub(crate) fn bytes(parts: &serde_json::Value) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for part in parts.as_array().expect("a list") {
+        match part.as_str() {
+            Some(text) => bytes.extend_from_slice(text.as_bytes()),
+            None => bytes.push(byte(part)),
+        }
+    }
+    bytes
+}
+
+/// One byte of a vector.
+pub(crate) fn byte(value: &serde_json::Value) -> u8 {
+    value
+        .as_u64()
+        .and_then(|byte| u8::try_from(byte).ok())
+        .expect("a byte")
 }
