@@ -8,7 +8,7 @@ Tested on macOS (dev and release bundle) and on an Android 16 emulator (dev, deb
 
 The plugin registers the URI scheme `leptos`. The window loads `leptos://localhost/` (the webview shows `http://leptos.localhost/` on Android). Every request goes to one dispatcher:
 
-- In release builds, the dispatcher is your app's axum router, rendered in-process. The files that `cargo leptos build` writes to the site root are embedded in the binary through `build.frontendDist` and serve as the fallback.
+- In release builds, the dispatcher is your app's axum router, rendered in-process. The files that `cargo leptos build` writes to the site root are embedded in the binary through `build.frontendDist` and serve as the fallback. If a handler panics, the request answers 500, unless the app builds with `panic = "abort"`.
 - In dev builds, the dispatcher forwards each request to `build.devUrl`, the `cargo leptos watch` server.
 
 The scheme answers GET and HEAD. Custom-protocol requests reach the app without a body on Android, so the scheme refuses every other method with a 405, on every platform.
@@ -29,7 +29,9 @@ Websockets to the plugin's origin also take the IPC path. The script replaces `W
 - The page's sends go out in order through `ws_send`.
 - When a page loads or its window closes, the plugin closes that webview's sockets with code 1001.
 
-Every request the plugin dispatches carries a `leptos-ssr-origin` header with the page origin, in dev and in release. The plugin replaces any value that the page sent. With it, the app's server tells its webview from a browser, for example to serve the webview another script.
+When a page on macOS loads another URL, WebKit cancels the page's pending IPC requests, and Tauri resends them over postMessage. The script gives every `fetch` and `ws_open` call an id, and the plugin runs each id once. So a server function that is in flight during a reload runs once, as on Android.
+
+Every request the plugin dispatches carries a `leptos-ssr-origin` header with the page origin, in dev and in release. The plugin replaces any value that the page sent. With it, the app's server tells its webview from a browser, for example to serve the webview another script. The header is a hint, not authentication. Any client of a server that also serves the router can send it.
 
 ## Setup
 
@@ -102,6 +104,7 @@ The Tauri build compiles the SSR side with plain cargo, not with cargo-leptos. T
 - Point `frontendDist` at the site root. When `/pkg/<name>.wasm` or `/pkg/<name>.js` is not embedded, release builds refuse to start.
 - If you set `server-fn-prefix`, `disable-server-fn-hash` or `server-fn-mod-path` in the cargo-leptos metadata, set `SERVER_FN_PREFIX`, `DISABLE_SERVER_FN_HASH` or `SERVER_FN_MOD_PATH` in `.cargo/config.toml` too. Leptos reads them at compile time.
 - Keep `hash-files` off. The plugin serves the bundle under its plain name.
+- Keep `site-pkg-dir` at `pkg`. The plugin looks for the bundle under `/pkg/`, and the `LeptosOptions` that it builds point the pages there.
 - The `.taurignore` matters in dev. `tauri dev` watches the path dependencies of the Tauri crate. Without it, every UI edit restarts the app, although in dev the app only forwards to the watch server.
 
 In dev builds, server functions run in the `cargo leptos watch` process. That process has no Tauri `AppHandle`, and the router closure does not run. Call Tauri commands from the browser for native work, as the demo does with `greet`.
@@ -120,7 +123,8 @@ These hold on every platform:
 - No cookies. Neither scheme responses nor IPC responses reach the webview cookie store.
 - A native `<form method="post">` submitted before hydration gets the 405.
 - `XMLHttpRequest` requests with a body are not rerouted. Leptos only uses `fetch`.
-- Redirects through the scheme become pages that load the new location, because wry on Android drops 3xx responses.
+- Redirects through the scheme become pages that load the new location. wry on Android drops 3xx responses, and WebKit does not follow them from a custom scheme.
+- A `fetch` over IPC does not follow redirects. The page gets the 3xx response. Leptos server functions are not affected, because they answer 200 with a `serverfnredirect` header.
 - `app.security.csp` and `app.security.headers` apply to `tauri://` responses only, not to the plugin's pages.
 - `useHttpsScheme` is not supported.
 
