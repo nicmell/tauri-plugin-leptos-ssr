@@ -67,8 +67,6 @@ impl Proxy {
         }
     }
 
-    // A page retried every second, so the window recovers on its own once the
-    // watch server is up again.
     pub(crate) fn unavailable(&self, method: &Method, reason: &str) -> Response<Vec<u8>> {
         let message = format!("waiting for the dev server at {}: {reason}", self.authority);
         if method == Method::GET {

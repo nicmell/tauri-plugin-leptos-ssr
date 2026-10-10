@@ -9,7 +9,7 @@ Tested on macOS (dev and release bundle) and on an Android 16 emulator (dev, deb
 The plugin registers the URI scheme `leptos`. The window loads `leptos://localhost/` (the webview shows `http://leptos.localhost/` on Android). Every request goes to one dispatcher:
 
 - In release builds, the dispatcher is your app's axum router, rendered in-process. The files that `cargo leptos build` writes to the site root are embedded in the binary through `build.frontendDist` and serve as the fallback. If a handler panics, the request answers 500, unless the app builds with `panic = "abort"`.
-- In dev builds, the dispatcher forwards each request to `build.devUrl`, the `cargo leptos watch` server.
+- In dev builds, the dispatcher forwards each request to `build.devUrl`, the `cargo leptos watch` server. While that server is down, a page load gets a 502 page that reloads every second, so the window recovers by itself.
 
 The scheme answers GET and HEAD. Custom-protocol requests reach the app without a body on Android, so the scheme refuses every other method with a 405, on every platform.
 

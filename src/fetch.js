@@ -1,5 +1,5 @@
-// Sends same-origin requests with a body from the plugin's pages over IPC:
-// custom-protocol requests reach the app without a body on Android.
+// Sends the requests with a body, the event streams and the websockets of
+// the plugin's pages over IPC (README.md, "How it works").
 ;(function () {
   const origin = new URL(__LEPTOS_SSR_ORIGIN__)
   // URL.origin is "null" for non-special schemes such as leptos:

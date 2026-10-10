@@ -13,7 +13,7 @@ use tower::ServiceExt;
 
 use crate::proxy::Proxy;
 
-/// Where requests for the plugin's scheme and its `fetch` command go.
+/// Where the plugin's scheme, its `fetch` command and its websockets go.
 pub(crate) enum Dispatcher {
     /// The app's router, in-process (release builds).
     Router(axum::Router),
@@ -113,9 +113,9 @@ pub(crate) trait Upgradable: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Upgradable for T {}
 
+// axum's `WebSocketUpgrade` takes its upgrade from a hyper connection, which
+// `oneshot` on the router cannot give it.
 /// One end of an in-memory connection whose other end the router serves.
-/// axum's `WebSocketUpgrade` takes its upgrade from a hyper connection, which
-/// `oneshot` on the router cannot give it.
 fn serve_in_memory(router: axum::Router) -> tokio::io::DuplexStream {
     let (client, server) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
