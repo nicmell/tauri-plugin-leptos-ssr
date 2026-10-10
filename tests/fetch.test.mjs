@@ -106,11 +106,30 @@ for (const [origin, href] of [
     assert.equal(head.method, 'POST')
     assert.equal(head.url, `${origin}/api/greet`)
     assert.match(Object.fromEntries(head.headers)['content-type'], /^application\/x-www-form-urlencoded/)
+    assert.match(head.call, /^[0-9a-z]+\.1$/)
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('serverfnredirect'), '1')
     assert.equal(await response.text(), 'hi')
   })
 }
+
+test('every call carries its own id, under one prefix per page', async () => {
+  const pages = []
+  for (let i = 0; i < 2; i++) {
+    const { window, named } = page(MACOS, 'leptos://localhost/', { fetch: () => frame(200) })
+    await window.fetch('/api/a', { method: 'POST', body: 'x' })
+    await window.fetch('/api/b', { method: 'POST', body: 'x' })
+    pages.push(
+      named('fetch').map(({ options }) =>
+        JSON.parse(decodeURIComponent(options.headers['leptos-ssr-request'])).call.split('.')
+      )
+    )
+  }
+  const [[[first, one], [same, two]], [[other]]] = pages
+  assert.deepEqual([one, two], ['1', '2'])
+  assert.equal(first, same)
+  assert.notEqual(first, other)
+})
 
 test('complete bodies take one round trip', async () => {
   const { window, calls } = page(MACOS, 'leptos://localhost/', {

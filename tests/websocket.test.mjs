@@ -177,7 +177,9 @@ test('it opens with its protocol, then delivers text and binary by binaryType', 
   const events = []
   socket.onopen = () => events.push(['open', socket.readyState, socket.protocol])
   socket.addEventListener('message', (event) => events.push(['message', event.data, event.origin]))
-  assert.deepEqual(called('ws_open')[0].payload, { url: `${MACOS}/ws`, protocols: ['chat'] })
+  const { call, ...open } = called('ws_open')[0].payload
+  assert.deepEqual(open, { url: `${MACOS}/ws`, protocols: ['chat'] })
+  assert.match(call, /^[0-9a-z]+\.1$/)
   opens[0].resolve({ id: 7, protocol: 'chat', extensions: '' })
   await until(() => reads.length === 1)
   assert.deepEqual(called('ws_read')[0].payload, { id: 7 })

@@ -41,6 +41,8 @@ pub enum Error {
     SocketClosed,
     #[error("the websocket failed: {0}")]
     Socket(String),
+    #[error("call {0} ran already")]
+    Repeated(String),
     #[error(transparent)]
     Url(#[from] url::ParseError),
 }

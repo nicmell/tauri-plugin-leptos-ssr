@@ -12,6 +12,10 @@
   const nativeFetch = window.fetch
   const invoke = (cmd, payload, options) =>
     window.__TAURI_INTERNALS__.invoke(cmd, payload, options)
+  // The ids that src/calls.rs runs once.
+  const page = Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join('')
+  let calls = 0
+  const nextCall = () => `${page}.${++calls}`
   const nullBodyStatuses = [101, 103, 204, 205, 304]
   const LAST = 1
   const IDLE = 2
@@ -154,7 +158,8 @@
       JSON.stringify({
         method: request.method,
         url: request.url,
-        headers: Array.from(request.headers.entries())
+        headers: Array.from(request.headers.entries()),
+        call: nextCall()
       })
     )
     // A plain object: Tauri sends a Headers instance as `{}` over postMessage.
@@ -625,7 +630,7 @@
     async #open(protocols) {
       let opened
       try {
-        opened = await invoke('plugin:leptos-ssr|ws_open', { url: this.#url, protocols })
+        opened = await invoke('plugin:leptos-ssr|ws_open', { url: this.#url, protocols, call: nextCall() })
       } catch {
         this.#fail()
         return
